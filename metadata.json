@@ -1,0 +1,6 @@
+{
+  "name": "SecretGuard",
+  "description": "Private communications app with trusted contacts, real-time messaging, consented call recording, and Keystore-protected app lock.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

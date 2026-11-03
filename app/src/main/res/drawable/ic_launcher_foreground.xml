@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Shield outline and silhouette -->
+    <path
+        android:fillColor="#26FFFFFF"
+        android:pathData="M54,24L32,33V51C32,67.5 41.4,82.6 54,88C66.6,82.6 76,67.5 76,51V33L54,24Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,27L35,34.8V51C35,65.3 43.1,78.5 54,83.4C64.9,78.5 73,65.3 73,51V34.8L54,27ZM54,31.4L69,37.6V51C69,63.1 62.6,74.4 54,79C45.4,74.4 39,63.1 39,51V37.6L54,31.4Z" />
+    <!-- Microphone capsule -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,39C50.7,39 48,41.7 48,45V53C48,56.3 50.7,59 54,59C57.3,59 60,56.3 60,53V45C60,41.7 57.3,39 54,39Z" />
+    <!-- Microphone stand arc and base -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M64,52C64,57.5 59.5,62 54,62C48.5,62 44,57.5 44,52H41C41,58.5 45.8,63.9 52,64.8V70H48V73H60V70H56V64.8C62.2,63.9 67,58.5 67,52H64Z" />
+</vector>
