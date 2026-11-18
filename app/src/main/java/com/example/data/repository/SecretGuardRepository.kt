@@ -9,8 +9,8 @@ import com.example.data.model.CallRecording
 import com.example.data.model.CallSession
 import com.example.data.model.ChatMessage
 import com.example.data.model.Conversation
-import com.example.data.model.SecurityReport
 import com.example.data.model.TrustedContact
+import com.example.data.model.UserPrivateSettings
 import com.example.data.model.UserProfile
 import com.google.firebase.Firebase
 import com.google.firebase.Timestamp
@@ -20,6 +20,9 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.snapshots
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -45,7 +48,7 @@ class SecretGuardRepository(
             ?: throw IllegalStateException("User must be signed in with Google before accessing Firestore.")
     }
 
-    // --- REALTIME OBSERVATION FLOWS ---
+    // --- REALTIME MULTI-USER OBSERVATION FLOWS ---
 
     fun observeUserProfile(userId: String): Flow<UserProfile?> {
         val path = "users/$userId"
@@ -63,10 +66,48 @@ class SecretGuardRepository(
             }
     }
 
+    fun observePrivateSettings(userId: String): Flow<UserPrivateSettings?> {
+        val path = "users/$userId/private/settings"
+        return db.collection("users").document(userId)
+            .collection("private")
+            .document("settings")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.toObject(
+                    UserPrivateSettings::class.java,
+                    DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                )
+            }
+            .catch { error ->
+                if (error is Exception) handleFirestoreError(error, OperationType.GET, path)
+                throw error
+            }
+    }
+
+    /**
+     * Real-time directory of registered SecretGuard users for contact discovery and live presence.
+     */
+    fun observeDirectoryUsers(): Flow<List<UserProfile>> {
+        val path = "users"
+        return db.collection("users")
+            .whereEqualTo("directoryVisible", true)
+            .snapshots()
+            .map { snapshot ->
+                snapshot.toObjects(
+                    UserProfile::class.java,
+                    DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                ).sortedByDescending { it.updatedAt ?: it.createdAt ?: Timestamp(0, 0) }
+            }
+            .catch { error ->
+                if (error is Exception) handleFirestoreError(error, OperationType.LIST, path)
+                throw error
+            }
+    }
+
     fun observeContacts(userId: String): Flow<List<TrustedContact>> {
         val path = "contacts"
         return db.collection("contacts")
-            .whereEqualTo("ownerUid", userId)
+            .whereArrayContains("memberUids", userId)
             .snapshots()
             .map { snapshot ->
                 snapshot.toObjects(
@@ -83,7 +124,7 @@ class SecretGuardRepository(
     fun observeConversations(userId: String): Flow<List<Conversation>> {
         val path = "conversations"
         return db.collection("conversations")
-            .whereEqualTo("ownerUid", userId)
+            .whereArrayContains("memberUids", userId)
             .snapshots()
             .map { snapshot ->
                 snapshot.toObjects(
@@ -102,7 +143,7 @@ class SecretGuardRepository(
         return db.collection("conversations")
             .document(conversationId)
             .collection("messages")
-            .whereEqualTo("ownerUid", userId)
+            .whereArrayContains("memberUids", userId)
             .snapshots()
             .map { snapshot ->
                 snapshot.toObjects(
@@ -119,7 +160,7 @@ class SecretGuardRepository(
     fun observeCalls(userId: String): Flow<List<CallSession>> {
         val path = "calls"
         return db.collection("calls")
-            .whereEqualTo("ownerUid", userId)
+            .whereArrayContains("memberUids", userId)
             .snapshots()
             .map { snapshot ->
                 snapshot.toObjects(
@@ -133,10 +174,26 @@ class SecretGuardRepository(
             }
     }
 
+    fun observeCallSession(callId: String): Flow<CallSession?> {
+        val path = "calls/$callId"
+        return db.collection("calls").document(callId)
+            .snapshots()
+            .map { snapshot ->
+                snapshot.toObject(
+                    CallSession::class.java,
+                    DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                )
+            }
+            .catch { error ->
+                if (error is Exception) handleFirestoreError(error, OperationType.GET, path)
+                throw error
+            }
+    }
+
     fun observeRecordings(userId: String): Flow<List<CallRecording>> {
         val path = "recordings"
         return db.collection("recordings")
-            .whereEqualTo("ownerUid", userId)
+            .whereArrayContains("memberUids", userId)
             .snapshots()
             .map { snapshot ->
                 snapshot.toObjects(
@@ -150,262 +207,151 @@ class SecretGuardRepository(
             }
     }
 
-    // --- PROFILE & WORKSPACE BOOTSTRAP ---
+    // --- PROFILE INITIALIZATION & LEGACY DEMO CLEANUP ---
 
     suspend fun ensureUserProfile(
-        displayName: String = "Secret User",
+        displayName: String = "",
         email: String = "",
         photoUrl: String = ""
     ): UserProfile {
         val uid = requireUserId()
-        val docRef = db.collection("users").document(uid)
+        val derivedName = displayName.trim().ifBlank {
+            email.substringBefore("@").replace(".", " ")
+                .replaceFirstChar { it.uppercase() }
+                .ifBlank { "User ${uid.take(5)}" }
+        }.take(80)
+        val derivedHandle = deriveHandle(email, derivedName, uid)
+        val safePhoto = photoUrl.take(240_000)
+
+        val userRef = db.collection("users").document(uid)
+        val privateRef = userRef.collection("private").document("settings")
+
         return try {
-            val existingSnap = docRef.get().await()
-            if (existingSnap.exists()) {
-                docRef.update(
-                    mapOf(
-                        "onlineStatus" to "online",
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                ).await()
+            val existingSnap = userRef.get().await()
+            val profile = if (existingSnap.exists()) {
+                val currentHandle = existingSnap.getString("userHandle")
+                if (currentHandle.isNullOrBlank()) {
+                    // Upgrade legacy profile schema to current multi-user directory schema
+                    userRef.set(
+                        mapOf(
+                            "uid" to uid,
+                            "displayName" to derivedName,
+                            "userHandle" to derivedHandle,
+                            "photoUrl" to safePhoto,
+                            "onlineStatus" to "online",
+                            "directoryVisible" to true,
+                            "accountType" to "google",
+                            "profileVisibility" to "contacts",
+                            "createdAt" to (existingSnap.getTimestamp("createdAt") ?: FieldValue.serverTimestamp()),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                } else {
+                    userRef.update(
+                        mapOf(
+                            "onlineStatus" to "online",
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
                 existingSnap.toObject(
                     UserProfile::class.java,
                     DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                ) ?: UserProfile(id = uid, uid = uid, displayName = displayName)
+                ) ?: UserProfile(id = uid, uid = uid, displayName = derivedName, userHandle = derivedHandle)
             } else {
-                val safeName = displayName.ifBlank { "Secret User" }.take(80)
-                val safeEmail = email.take(120)
-                val safePhoto = photoUrl.take(500)
                 val payload = mapOf(
                     "uid" to uid,
-                    "displayName" to safeName,
-                    "email" to safeEmail,
+                    "displayName" to derivedName,
+                    "userHandle" to derivedHandle,
                     "photoUrl" to safePhoto,
                     "onlineStatus" to "online",
+                    "directoryVisible" to true,
                     "accountType" to "google",
                     "profileVisibility" to "contacts",
-                    "appLockEnabled" to false,
-                    "autoRecordCalls" to true,
-                    "notificationAlert" to true,
-                    "recordingQuality" to "HD 720p",
-                    "retentionDays" to 30L,
-                    "blockedUids" to emptyList<String>(),
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-                docRef.set(payload).await()
+                userRef.set(payload).await()
                 UserProfile(
                     id = uid,
                     uid = uid,
-                    displayName = safeName,
-                    email = safeEmail,
+                    displayName = derivedName,
+                    userHandle = derivedHandle,
                     photoUrl = safePhoto
                 )
             }
+
+            val privSnap = privateRef.get().await()
+            if (!privSnap.exists()) {
+                privateRef.set(
+                    mapOf(
+                        "uid" to uid,
+                        "email" to email.take(120),
+                        "appLockEnabled" to false,
+                        "autoRecordCalls" to true,
+                        "notificationAlert" to true,
+                        "recordingQuality" to "HD 720p",
+                        "retentionDays" to 30L,
+                        "blockedUids" to emptyList<String>(),
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+            profile
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.WRITE, docRef.path)
+            handleFirestoreError(e, OperationType.WRITE, userRef.path)
             throw e
         }
     }
 
     /**
-     * Ensures the authenticated user's profile and initial trusted communications workspace
-     * exist in Firestore so all 5 reference screens operate on live Firestore documents.
+     * Initializes the authenticated user's real profile and private settings, and purges any
+     * legacy fake demo documents ("Priya Sharma", "Rahul Karki", "Secret Group") if present.
      */
     suspend fun ensureWorkspaceInitialized(
-        displayName: String = "Secret User",
+        displayName: String = "",
         email: String = "",
         photoUrl: String = ""
     ) {
         val uid = requireUserId()
         ensureUserProfile(displayName = displayName, email = email, photoUrl = photoUrl)
-
-        val contactsPath = "contacts"
-        try {
-            val existingContacts = db.collection(contactsPath)
-                .whereEqualTo("ownerUid", uid)
-                .limit(1)
-                .get()
-                .await()
-
-            if (!existingContacts.isEmpty) return
-
-            // 1. Seed Trusted Contacts matching reference screens
-            val priyaContactId = "contact_priya_${uid.take(8)}"
-            val rahulContactId = "contact_rahul_${uid.take(8)}"
-            val groupContactId = "contact_group_${uid.take(8)}"
-
-            createTrustedContactInternal(
-                contactId = priyaContactId,
-                contactName = "Priya Sharma",
-                contactHandle = "priya.sharma@secretguard.org",
-                avatarKey = "priya",
-                presenceState = "online",
-                lastActivityText = "Video Call • 2m ago",
-                lastActivityType = "video_call"
-            )
-            createTrustedContactInternal(
-                contactId = rahulContactId,
-                contactName = "Rahul Karki",
-                contactHandle = "rahul.karki@secretguard.org",
-                avatarKey = "rahul",
-                presenceState = "online",
-                lastActivityText = "Audio • 5m ago",
-                lastActivityType = "audio_recording"
-            )
-            createTrustedContactInternal(
-                contactId = groupContactId,
-                contactName = "Secret Group",
-                contactHandle = "trusted-team@secretguard.org",
-                avatarKey = "group",
-                presenceState = "online",
-                lastActivityText = "New Message • 10m ago",
-                lastActivityType = "message"
-            )
-
-            // 2. Seed Encrypted Conversations & Messages for Priya Sharma, Rahul Karki, and Secret Group
-            val priyaConvId = "conv_priya_${uid.take(8)}"
-            createConversationWithId(
-                conversationId = priyaConvId,
-                participantName = "Priya Sharma",
-                participantAvatarKey = "priya",
-                presenceState = "online",
-                lastMessageText = "Great! Let's call now?"
-            )
-
-            insertMessageInternal(
-                conversationId = priyaConvId,
-                senderUid = "priya_uid",
-                senderName = "Priya Sharma",
-                isOutgoing = false,
-                messageType = "text",
-                text = "Hey! Are you free?",
-                mediaDurationSec = 0L,
-                mediaLabel = "10:12 AM"
-            )
-            insertMessageInternal(
-                conversationId = priyaConvId,
-                senderUid = uid,
-                senderName = displayName.ifBlank { "Secret User" },
-                isOutgoing = true,
-                messageType = "text",
-                text = "Yes, I'm here. \uD83D\uDE0A",
-                mediaDurationSec = 0L,
-                mediaLabel = "10:13 AM"
-            )
-            insertMessageInternal(
-                conversationId = priyaConvId,
-                senderUid = uid,
-                senderName = displayName.ifBlank { "Secret User" },
-                isOutgoing = true,
-                messageType = "video",
-                text = "Encrypted Mountain Lake Clip",
-                mediaDurationSec = 15L,
-                mediaLabel = "00:00:15"
-            )
-            insertMessageInternal(
-                conversationId = priyaConvId,
-                senderUid = uid,
-                senderName = displayName.ifBlank { "Secret User" },
-                isOutgoing = true,
-                messageType = "audio",
-                text = "Encrypted Voice Note",
-                mediaDurationSec = 12L,
-                mediaLabel = "00:00:12"
-            )
-            insertMessageInternal(
-                conversationId = priyaConvId,
-                senderUid = "priya_uid",
-                senderName = "Priya Sharma",
-                isOutgoing = false,
-                messageType = "text",
-                text = "Great! Let's call now?",
-                mediaDurationSec = 0L,
-                mediaLabel = "10:16 AM"
-            )
-
-            val rahulConvId = "conv_rahul_${uid.take(8)}"
-            createConversationWithId(
-                conversationId = rahulConvId,
-                participantName = "Rahul Karki",
-                participantAvatarKey = "rahul",
-                presenceState = "online",
-                lastMessageText = "Shared consented audio note (00:00:18)"
-            )
-            insertMessageInternal(
-                conversationId = rahulConvId,
-                senderUid = "rahul_uid",
-                senderName = "Rahul Karki",
-                isOutgoing = false,
-                messageType = "audio",
-                text = "Security audit voice briefing",
-                mediaDurationSec = 18L,
-                mediaLabel = "00:00:18"
-            )
-
-            val groupConvId = "conv_group_${uid.take(8)}"
-            createConversationWithId(
-                conversationId = groupConvId,
-                participantName = "Secret Group",
-                participantAvatarKey = "group",
-                presenceState = "online",
-                lastMessageText = "All participants verified AES-256-GCM keys."
-            )
-            insertMessageInternal(
-                conversationId = groupConvId,
-                senderUid = "group_uid",
-                senderName = "Secret Group",
-                isOutgoing = false,
-                messageType = "text",
-                text = "All participants verified AES-256-GCM keys.",
-                mediaDurationSec = 0L,
-                mediaLabel = "10:06 AM"
-            )
-
-            // 3. Seed Consented Call & Recording History
-            val sampleCallId = "call_priya_${uid.take(8)}"
-            db.collection("calls").document(sampleCallId).set(
-                mapOf(
-                    "ownerUid" to uid,
-                    "participantName" to "Priya Sharma",
-                    "participantAvatarKey" to "priya",
-                    "callType" to "video",
-                    "status" to "ended",
-                    "consentState" to "all_consented",
-                    "isRecording" to true,
-                    "durationSec" to 754L,
-                    "encryptionVerified" to true,
-                    "createdAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
-
-            createRecordingMetadata(
-                callId = sampleCallId,
-                title = "Priya Sharma • Consented Video Session",
-                participantName = "Priya Sharma",
-                mediaType = "video",
-                durationSec = 15L,
-                sizeBytes = 1_840_000L
-            )
-            createRecordingMetadata(
-                callId = "audio_rahul_${uid.take(8)}",
-                title = "Rahul Karki • Encrypted Voice Note",
-                participantName = "Rahul Karki",
-                mediaType = "audio",
-                durationSec = 12L,
-                sizeBytes = 320_000L
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.WRITE, contactsPath)
-        }
+        purgeLegacyDemoArtifactsIfPresent(uid)
     }
 
-    // --- USER SETTINGS & PRESENCE ---
+    private suspend fun purgeLegacyDemoArtifactsIfPresent(uid: String) {
+        val prefix = uid.take(8)
+        val legacyContactIds = listOf(
+            "contact_priya_$prefix",
+            "contact_rahul_$prefix",
+            "contact_group_$prefix"
+        )
+        for (cid in legacyContactIds) {
+            runCatching { db.collection("contacts").document(cid).delete().await() }
+        }
+
+        val legacyConvIds = listOf(
+            "conv_priya_$prefix",
+            "conv_rahul_$prefix",
+            "conv_group_$prefix"
+        )
+        for (convId in legacyConvIds) {
+            runCatching {
+                val convRef = db.collection("conversations").document(convId)
+                val msgs = convRef.collection("messages").whereEqualTo("ownerUid", uid).get().await()
+                for (m in msgs.documents) {
+                    runCatching { m.reference.delete().await() }
+                }
+                convRef.delete().await()
+            }
+        }
+
+        runCatching { db.collection("calls").document("call_priya_$prefix").delete().await() }
+    }
+
+    // --- USER SETTINGS & REAL-TIME PRESENCE ---
 
     suspend fun updateUserSettings(
         displayName: String,
@@ -417,12 +363,20 @@ class SecretGuardRepository(
         retentionDays: Long
     ) {
         val uid = requireUserId()
-        val docRef = db.collection("users").document(uid)
+        val userRef = db.collection("users").document(uid)
+        val privRef = userRef.collection("private").document("settings")
         try {
-            docRef.update(
+            userRef.update(
                 mapOf(
-                    "displayName" to displayName.trim().ifBlank { "Secret User" }.take(80),
+                    "displayName" to displayName.trim().ifBlank { "User ${uid.take(5)}" }.take(80),
                     "profileVisibility" to profileVisibility,
+                    "directoryVisible" to (profileVisibility != "private"),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+
+            privRef.update(
+                mapOf(
                     "appLockEnabled" to appLockEnabled,
                     "autoRecordCalls" to autoRecordCalls,
                     "notificationAlert" to notificationAlert,
@@ -434,7 +388,68 @@ class SecretGuardRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            handleFirestoreError(e, OperationType.UPDATE, userRef.path)
+            throw e
+        }
+    }
+
+    suspend fun updateUserProfileCustomization(
+        displayName: String,
+        userHandle: String,
+        photoUrl: String,
+        profileVisibility: String,
+        gender: String = "",
+        age: Long = 0L,
+        requireCallApproval: Boolean = false
+    ) {
+        val uid = requireUserId()
+        val userRef = db.collection("users").document(uid)
+        val cleanName = displayName.trim().ifBlank { "User ${uid.take(5)}" }.take(80)
+        val rawHandle = userHandle.trim().ifBlank { deriveHandle("", cleanName, uid) }
+        val cleanHandle = (if (rawHandle.startsWith("@")) rawHandle else "@$rawHandle").take(120)
+        val validVis = if (profileVisibility in listOf("public", "contacts", "private")) {
+            profileVisibility
+        } else {
+            "contacts"
+        }
+        val validGender = if (gender in listOf("Female", "Male")) gender else ""
+        val validAge = age.coerceIn(0L, 120L)
+        try {
+            userRef.update(
+                mapOf(
+                    "displayName" to cleanName,
+                    "userHandle" to cleanHandle,
+                    "photoUrl" to photoUrl.take(240_000),
+                    "gender" to validGender,
+                    "age" to validAge,
+                    "requireCallApproval" to requireCallApproval,
+                    "profileVisibility" to validVis,
+                    "directoryVisible" to (validVis != "private"),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, userRef.path)
+            throw e
+        }
+    }
+
+    suspend fun setRequireCallApproval(required: Boolean) {
+        val uid = requireUserId()
+        val userRef = db.collection("users").document(uid)
+        try {
+            userRef.update(
+                mapOf(
+                    "requireCallApproval" to required,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, userRef.path)
             throw e
         }
     }
@@ -456,63 +471,172 @@ class SecretGuardRepository(
         }
     }
 
-    // --- TRUSTED CONTACTS ---
+    // --- REAL MULTI-USER TRUSTED CONTACTS & CALL APPROVAL ---
 
+    /**
+     * Connects with a real registered user from the directory or creates a real contact entry,
+     * along with a shared real-time conversation room (`memberUids`).
+     */
     suspend fun addTrustedContact(
         contactName: String,
         contactHandle: String,
-        avatarKey: String = "custom"
+        targetUid: String = "",
+        requesterName: String = "",
+        requesterHandle: String = "",
+        avatarKey: String = "custom",
+        callApproved: Boolean = true,
+        callApprovalRequestedBy: String = ""
     ): String {
-        val contactId = "contact_${UUID.randomUUID().toString().replace("-", "").take(16)}"
-        createTrustedContactInternal(
-            contactId = contactId,
-            contactName = contactName.trim().ifBlank { "Trusted Contact" }.take(80),
-            contactHandle = contactHandle.trim().ifBlank { "contact@secretguard.org" }.take(120),
-            avatarKey = avatarKey,
-            presenceState = "online",
-            lastActivityText = "Trusted Contact • Just now",
-            lastActivityType = "message"
-        )
-        createConversationWithId(
-            conversationId = "conv_${UUID.randomUUID().toString().replace("-", "").take(16)}",
-            participantName = contactName.trim().ifBlank { "Trusted Contact" }.take(80),
-            participantAvatarKey = avatarKey,
-            presenceState = "online",
-            lastMessageText = "Encrypted channel established."
-        )
-        return contactId
-    }
-
-    private suspend fun createTrustedContactInternal(
-        contactId: String,
-        contactName: String,
-        contactHandle: String,
-        avatarKey: String,
-        presenceState: String,
-        lastActivityText: String,
-        lastActivityType: String
-    ) {
         val uid = requireUserId()
+        var resolvedTargetUid = targetUid.trim()
+        var resolvedTargetName = contactName.trim()
+        var resolvedTargetHandle = contactHandle.trim()
+        var resolvedAvatar = avatarKey.ifBlank { "custom" }
+
+        if (resolvedTargetUid.isBlank()) {
+            val directorySnap = runCatching {
+                db.collection("users")
+                    .whereEqualTo("directoryVisible", true)
+                    .get()
+                    .await()
+            }.getOrNull()
+
+            val matchedUser = directorySnap?.documents?.mapNotNull {
+                it.toObject(UserProfile::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            }?.firstOrNull { candidate ->
+                candidate.uid != uid && (
+                    candidate.userHandle.equals(resolvedTargetHandle, ignoreCase = true) ||
+                        candidate.userHandle.equals("@$resolvedTargetHandle", ignoreCase = true) ||
+                        candidate.displayName.equals(resolvedTargetName, ignoreCase = true) ||
+                        candidate.uid.equals(resolvedTargetHandle, ignoreCase = true)
+                    )
+            }
+
+            if (matchedUser != null) {
+                resolvedTargetUid = matchedUser.uid
+                resolvedTargetName = matchedUser.displayName
+                resolvedTargetHandle = matchedUser.userHandle
+                if (matchedUser.photoUrl.isNotBlank()) {
+                    resolvedAvatar = matchedUser.photoUrl
+                }
+            }
+        }
+
+        val effectiveTargetUid = resolvedTargetUid.ifBlank { uid }
+        val members = if (effectiveTargetUid == uid) listOf(uid) else listOf(uid, effectiveTargetUid).distinct()
+        val contactId = if (effectiveTargetUid != uid) {
+            val sorted = listOf(uid, effectiveTargetUid).sorted()
+            "contact_${sorted[0].take(20)}_${sorted[1].take(20)}"
+        } else {
+            "contact_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+        }
+
+        val safeRequesterName = requesterName.trim().ifBlank { "SecretGuard User" }.take(80)
+        val safeRequesterHandle = requesterHandle.trim().ifBlank { "@${uid.take(6)}" }.take(120)
+        val safeContactName = resolvedTargetName.ifBlank { "Trusted Contact" }.take(80)
+        val safeContactHandle = resolvedTargetHandle.ifBlank { "@contact" }.take(120)
+        val activityLabel = if (callApproved) "Connected • Call Ready" else "Call Approval Requested"
+
         val docRef = db.collection("contacts").document(contactId)
         try {
             docRef.set(
                 mapOf(
                     "ownerUid" to uid,
-                    "contactName" to contactName.take(80),
-                    "contactHandle" to contactHandle.take(120),
-                    "avatarKey" to avatarKey.take(40),
+                    "targetUid" to effectiveTargetUid.take(128),
+                    "memberUids" to members,
+                    "requesterName" to safeRequesterName,
+                    "requesterHandle" to safeRequesterHandle,
+                    "contactName" to safeContactName,
+                    "contactHandle" to safeContactHandle,
+                    "avatarKey" to resolvedAvatar.take(240_000),
                     "status" to "accepted",
-                    "presenceState" to presenceState,
-                    "lastActivityText" to lastActivityText.take(160),
-                    "lastActivityType" to lastActivityType,
+                    "presenceState" to "online",
+                    "lastActivityText" to activityLabel,
+                    "lastActivityType" to "message",
+                    "callApproved" to callApproved,
+                    "callApprovalRequestedBy" to callApprovalRequestedBy.take(128),
                     "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+
+            val convId = buildDeterministicConversationId(uid, effectiveTargetUid)
+            createConversationWithId(
+                conversationId = convId,
+                partnerUid = effectiveTargetUid,
+                ownerName = safeRequesterName,
+                participantName = safeContactName,
+                participantAvatarKey = resolvedAvatar,
+                presenceState = "online",
+                lastMessageText = "Private chat ready."
+            )
+            return contactId
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            throw e
+        }
+    }
+
+    suspend fun requestCallApprovalForPartner(
+        partnerUid: String,
+        partnerName: String,
+        partnerHandle: String,
+        partnerAvatar: String,
+        requesterName: String,
+        requesterHandle: String
+    ) {
+        val uid = requireUserId()
+        addTrustedContact(
+            contactName = partnerName,
+            contactHandle = partnerHandle,
+            targetUid = partnerUid,
+            requesterName = requesterName,
+            requesterHandle = requesterHandle,
+            avatarKey = partnerAvatar,
+            callApproved = false,
+            callApprovalRequestedBy = uid
+        )
+    }
+
+    suspend fun setContactCallApproval(contactId: String, approved: Boolean) {
+        val uid = requireUserId()
+        val docRef = db.collection("contacts").document(contactId)
+        try {
+            docRef.update(
+                mapOf(
+                    "callApproved" to approved,
+                    "callApprovalRequestedBy" to if (approved) "" else uid,
+                    "lastActivityText" to if (approved) "Call Approved ✓" else "Call Approval Required",
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
+    }
+
+    suspend fun acceptContactRequest(contactId: String) {
+        requireUserId()
+        val docRef = db.collection("contacts").document(contactId)
+        try {
+            docRef.update(
+                mapOf(
+                    "status" to "accepted",
+                    "callApproved" to true,
+                    "callApprovalRequestedBy" to "",
+                    "lastActivityText" to "Contact request accepted",
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             throw e
         }
     }
@@ -535,23 +659,42 @@ class SecretGuardRepository(
         }
     }
 
-    // --- CONVERSATIONS & ENCRYPTED MESSAGING ---
+    // --- REAL-TIME MULTI-USER CONVERSATIONS & ENCRYPTED MESSAGING ---
+
+    fun buildDeterministicConversationId(uidA: String, uidB: String): String {
+        val cleanA = uidA.replace(Regex("[^a-zA-Z0-9_\\-]"), "").take(24)
+        val cleanB = uidB.replace(Regex("[^a-zA-Z0-9_\\-]"), "").take(24)
+        return if (cleanA == cleanB || cleanB.isBlank()) {
+            "conv_self_$cleanA"
+        } else {
+            val sorted = listOf(cleanA, cleanB).sorted()
+            "conv_${sorted[0]}_${sorted[1]}"
+        }
+    }
 
     suspend fun createConversationWithId(
         conversationId: String = "conv_${UUID.randomUUID().toString().replace("-", "").take(16)}",
+        partnerUid: String = "",
+        ownerName: String = "SecretGuard User",
         participantName: String,
-        participantAvatarKey: String = "priya",
+        participantAvatarKey: String = "custom",
         presenceState: String = "online",
         lastMessageText: String = ""
     ): String {
         val uid = requireUserId()
+        val effectivePartnerUid = partnerUid.ifBlank { uid }.take(128)
+        val members = if (effectivePartnerUid == uid) listOf(uid) else listOf(uid, effectivePartnerUid).distinct()
         val docRef = db.collection("conversations").document(conversationId)
+
         try {
             docRef.set(
                 mapOf(
                     "ownerUid" to uid,
+                    "partnerUid" to effectivePartnerUid,
+                    "memberUids" to members,
+                    "ownerName" to ownerName.trim().ifBlank { "SecretGuard User" }.take(80),
                     "participantName" to participantName.trim().ifBlank { "Trusted Contact" }.take(80),
-                    "participantAvatarKey" to participantAvatarKey.take(40),
+                    "participantAvatarKey" to participantAvatarKey.ifBlank { "custom" }.take(240_000),
                     "presenceState" to presenceState,
                     "lastMessageText" to lastMessageText.take(500),
                     "unreadCount" to 0L,
@@ -574,28 +717,41 @@ class SecretGuardRepository(
         senderName: String,
         text: String,
         messageType: String = "text",
+        mediaBase64: String = "",
         mediaDurationSec: Long = 0L,
         mediaLabel: String = ""
     ): String {
         val uid = requireUserId()
+        val convRef = db.collection("conversations").document(conversationId)
+        val convSnap = convRef.get().await()
+        val rawMembers = (convSnap.get("memberUids") as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+        val memberUids = if (rawMembers.isNotEmpty() && uid in rawMembers) rawMembers else listOf(uid)
+
+        val formattedTime = mediaLabel.ifBlank {
+            SimpleDateFormat("hh:mm a", Locale.US).format(Date())
+        }
+
         val messageId = insertMessageInternal(
             conversationId = conversationId,
+            memberUids = memberUids,
             senderUid = uid,
-            senderName = senderName.ifBlank { "Secret User" },
+            senderName = senderName.ifBlank { "SecretGuard User" },
             isOutgoing = true,
             messageType = messageType,
             text = text,
+            mediaBase64 = mediaBase64,
             mediaDurationSec = mediaDurationSec,
-            mediaLabel = mediaLabel
+            mediaLabel = formattedTime
         )
+
         val preview = when (messageType) {
             "video" -> "\uD83C\uDFA5 Encrypted Video (${formatDuration(mediaDurationSec)})"
             "audio" -> "\uD83C\uDF99\uFE0F Voice Message (${formatDuration(mediaDurationSec)})"
-            "image" -> "\uD83D\uDDBC\uFE0F Encrypted Photo: $text"
+            "image" -> "\uD83D\uDDBC\uFE0F Encrypted Photo"
             "recording" -> "\uD83D\uDD12 Consented Recording (${formatDuration(mediaDurationSec)})"
             else -> text
         }
-        val convRef = db.collection("conversations").document(conversationId)
+
         try {
             convRef.update(
                 mapOf(
@@ -612,13 +768,57 @@ class SecretGuardRepository(
         return messageId
     }
 
+    suspend fun markIncomingMessagesAsRead(conversationId: String, messages: List<ChatMessage>) {
+        val uid = auth.currentUser?.uid ?: return
+        val unreadIncoming = messages.filter { it.senderUid != uid && it.deliveryState != "read" }
+        for (msg in unreadIncoming) {
+            val msgRef = db.collection("conversations")
+                .document(conversationId)
+                .collection("messages")
+                .document(msg.id)
+            runCatching {
+                msgRef.update(
+                    mapOf(
+                        "deliveryState" to "read",
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+        }
+    }
+
+    suspend fun deleteMessagePermanently(conversationId: String, messageId: String) {
+        requireUserId()
+        if (conversationId.isBlank() || messageId.isBlank()) return
+        val convRef = db.collection("conversations").document(conversationId)
+        val msgRef = convRef.collection("messages").document(messageId)
+        try {
+            msgRef.delete().await()
+            runCatching {
+                convRef.update(
+                    mapOf(
+                        "lastMessageText" to "Message permanently deleted",
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, msgRef.path)
+            throw e
+        }
+    }
+
     private suspend fun insertMessageInternal(
         conversationId: String,
+        memberUids: List<String>,
         senderUid: String,
         senderName: String,
         isOutgoing: Boolean,
         messageType: String,
         text: String,
+        mediaBase64: String,
         mediaDurationSec: Long,
         mediaLabel: String
     ): String {
@@ -629,12 +829,16 @@ class SecretGuardRepository(
             .collection("messages")
             .document(messageId)
         val safeText = text.trim().take(2000)
-        val encryptedEnvelope = cryptoManager.encryptMessageEnvelope(safeText).take(4000)
+        val encryptedEnvelope = cryptoManager.encryptMessageEnvelope(
+            plaintext = safeText.ifBlank { messageType },
+            channelId = conversationId
+        ).take(4000)
 
         try {
             msgRef.set(
                 mapOf(
                     "ownerUid" to uid,
+                    "memberUids" to memberUids.distinct().take(8),
                     "conversationId" to conversationId,
                     "senderUid" to senderUid.take(128),
                     "senderName" to senderName.take(80),
@@ -642,9 +846,10 @@ class SecretGuardRepository(
                     "messageType" to messageType,
                     "text" to safeText,
                     "encryptedCiphertext" to encryptedEnvelope,
+                    "mediaBase64" to mediaBase64.take(740_000),
                     "mediaDurationSec" to mediaDurationSec.coerceIn(0L, 36000L),
                     "mediaLabel" to mediaLabel.take(120),
-                    "deliveryState" to "read",
+                    "deliveryState" to "sent",
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -658,28 +863,47 @@ class SecretGuardRepository(
         }
     }
 
-    // --- CALLS & CONSENT-FIRST RECORDING PIPELINE ---
+    // --- REAL-TIME MULTI-USER CALL SIGNALING, LIVE CAMERA STREAM & CONSENT RECORDING ---
 
     suspend fun startCallSession(
+        calleeUid: String = "",
+        additionalCalleeUids: List<String> = emptyList(),
+        callerName: String = "SecretGuard User",
         participantName: String,
         participantAvatarKey: String,
         callType: String
     ): String {
         val uid = requireUserId()
+        val effectiveCalleeUid = calleeUid.ifBlank {
+            additionalCalleeUids.firstOrNull { it.isNotBlank() && it != uid }.orEmpty()
+        }.ifBlank { uid }.take(128)
+        val members = (listOf(uid, effectiveCalleeUid) + additionalCalleeUids.map { it.trim().take(128) })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(8)
+        val initialStatus = if (members.size <= 1) "connected" else "ringing"
+
         val callId = "call_${UUID.randomUUID().toString().replace("-", "").take(16)}"
         val docRef = db.collection("calls").document(callId)
         try {
             docRef.set(
                 mapOf(
                     "ownerUid" to uid,
-                    "participantName" to participantName.trim().ifBlank { "Priya Sharma" }.take(80),
-                    "participantAvatarKey" to participantAvatarKey.take(40),
+                    "calleeUid" to effectiveCalleeUid,
+                    "memberUids" to members,
+                    "callerName" to callerName.trim().ifBlank { "SecretGuard User" }.take(80),
+                    "participantName" to participantName.trim().ifBlank { "Trusted Contact" }.take(80),
+                    "participantAvatarKey" to participantAvatarKey.ifBlank { "custom" }.take(240_000),
                     "callType" to if (callType == "audio") "audio" else "video",
-                    "status" to "connected",
+                    "status" to initialStatus,
                     "consentState" to "none",
+                    "callerConsent" to false,
+                    "calleeConsent" to false,
                     "isRecording" to false,
                     "durationSec" to 0L,
                     "encryptionVerified" to true,
+                    "callerVideoFrame" to "",
+                    "calleeVideoFrame" to "",
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -693,19 +917,116 @@ class SecretGuardRepository(
         }
     }
 
+    suspend fun addParticipantToCall(
+        callId: String,
+        newParticipantUid: String,
+        newParticipantName: String
+    ) {
+        val uid = requireUserId()
+        if (callId.isBlank()) return
+        val docRef = db.collection("calls").document(callId)
+        try {
+            val snap = docRef.get().await()
+            if (!snap.exists()) return
+            val existingMembers = (snap.get("memberUids") as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+            val cleanNewUid = newParticipantUid.trim().take(128)
+            val updatedMembers = (existingMembers + listOfNotNull(uid, cleanNewUid.takeIf { it.isNotBlank() }))
+                .distinct()
+                .take(8)
+            val currentNames = snap.getString("participantName").orEmpty().trim()
+            val cleanNewName = newParticipantName.trim().ifBlank { "Participant" }
+            val updatedNames = if (currentNames.contains(cleanNewName, ignoreCase = true)) {
+                currentNames
+            } else if (currentNames.isBlank()) {
+                cleanNewName
+            } else {
+                "$currentNames, $cleanNewName"
+            }.take(80)
+
+            docRef.update(
+                mapOf(
+                    "memberUids" to updatedMembers,
+                    "participantName" to updatedNames,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
+    }
+
+    suspend fun acceptIncomingCall(callId: String) {
+        requireUserId()
+        val docRef = db.collection("calls").document(callId)
+        try {
+            docRef.update(
+                mapOf(
+                    "status" to "connected",
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
+    }
+
+    suspend fun declineIncomingCall(callId: String) {
+        requireUserId()
+        val docRef = db.collection("calls").document(callId)
+        try {
+            docRef.update(
+                mapOf(
+                    "status" to "declined",
+                    "isRecording" to false,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
+    }
+
+    suspend fun publishLiveVideoFrame(callId: String, isCaller: Boolean, base64Jpeg: String) {
+        auth.currentUser?.uid ?: return
+        if (callId.isBlank() || base64Jpeg.length > 440_000) return
+        val docRef = db.collection("calls").document(callId)
+        val fieldName = if (isCaller) "callerVideoFrame" else "calleeVideoFrame"
+        runCatching {
+            docRef.update(
+                mapOf(
+                    fieldName to base64Jpeg,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        }
+    }
+
     suspend fun updateCallConsentAndRecording(
         callId: String,
         consentState: String,
+        callerConsent: Boolean,
+        calleeConsent: Boolean,
         isRecording: Boolean,
         durationSec: Long
     ) {
         requireUserId()
-        val safeRecording = isRecording && consentState == "all_consented"
+        val safeRecording = isRecording && consentState == "all_consented" && callerConsent && calleeConsent
         val docRef = db.collection("calls").document(callId)
         try {
             docRef.update(
                 mapOf(
                     "consentState" to consentState,
+                    "callerConsent" to callerConsent,
+                    "calleeConsent" to calleeConsent,
                     "isRecording" to safeRecording,
                     "durationSec" to durationSec.coerceIn(0L, 86400L),
                     "updatedAt" to FieldValue.serverTimestamp()
@@ -724,28 +1045,43 @@ class SecretGuardRepository(
         participantName: String,
         callType: String,
         durationSec: Long,
-        wasConsentedRecording: Boolean
+        wasConsentedRecording: Boolean,
+        recordedAudioBase64: String = "",
+        recordedLocalFilePath: String = "",
+        recordedSizeBytes: Long = 0L
     ) {
-        requireUserId()
+        val uid = requireUserId()
         val docRef = db.collection("calls").document(callId)
         try {
-            docRef.update(
-                mapOf(
-                    "status" to "ended",
-                    "isRecording" to false,
-                    "durationSec" to durationSec.coerceIn(0L, 86400L),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
+            val snap = docRef.get().await()
+            val currentStatus = snap.getString("status") ?: "ended"
+            val rawMembers = (snap.get("memberUids") as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+            val members = if (rawMembers.isNotEmpty() && uid in rawMembers) rawMembers else listOf(uid)
 
-            if (wasConsentedRecording && durationSec >= 1L) {
+            if (currentStatus !in listOf("ended", "declined", "missed")) {
+                docRef.update(
+                    mapOf(
+                        "status" to "ended",
+                        "isRecording" to false,
+                        "callerVideoFrame" to "",
+                        "calleeVideoFrame" to "",
+                        "durationSec" to durationSec.coerceIn(0L, 86400L),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+
+            if (wasConsentedRecording && (recordedSizeBytes > 0L || recordedAudioBase64.isNotBlank())) {
                 createRecordingMetadata(
                     callId = callId,
+                    memberUids = members,
                     title = "$participantName • Consented ${if (callType == "video") "Video" else "Audio"} Call",
                     participantName = participantName,
-                    mediaType = if (callType == "video") "video" else "audio",
+                    mediaType = "audio",
                     durationSec = durationSec.coerceAtLeast(1L),
-                    sizeBytes = (durationSec.coerceAtLeast(1L) * 48_000L).coerceAtMost(500_000_000L)
+                    sizeBytes = recordedSizeBytes.coerceAtLeast(1L),
+                    audioBase64 = recordedAudioBase64,
+                    localFilePath = recordedLocalFilePath
                 )
             }
         } catch (e: CancellationException) {
@@ -756,29 +1092,40 @@ class SecretGuardRepository(
         }
     }
 
-    // --- RECORDINGS & STORAGE MANAGER ---
+    // --- REAL RECORDINGS & STORAGE MANAGER ---
 
     suspend fun createRecordingMetadata(
         callId: String,
+        memberUids: List<String> = emptyList(),
         title: String,
         participantName: String,
         mediaType: String,
         durationSec: Long,
-        sizeBytes: Long
+        sizeBytes: Long,
+        audioBase64: String = "",
+        localFilePath: String = ""
     ): String {
         val uid = requireUserId()
+        val effectiveMembers = if (memberUids.isNotEmpty() && uid in memberUids) {
+            memberUids.distinct().take(8)
+        } else {
+            listOf(uid)
+        }
         val recordingId = "rec_${UUID.randomUUID().toString().replace("-", "").take(16)}"
         val docRef = db.collection("recordings").document(recordingId)
         try {
             docRef.set(
                 mapOf(
                     "ownerUid" to uid,
+                    "memberUids" to effectiveMembers,
                     "callId" to callId.take(128),
                     "title" to title.trim().ifBlank { "Consented Audio Recording" }.take(120),
-                    "participantName" to participantName.trim().ifBlank { "Secret User" }.take(80),
+                    "participantName" to participantName.trim().ifBlank { "SecretGuard User" }.take(80),
                     "mediaType" to if (mediaType == "video") "video" else "audio",
                     "durationSec" to durationSec.coerceIn(1L, 86400L),
                     "sizeBytes" to sizeBytes.coerceIn(1L, 1073741824L),
+                    "audioBase64" to audioBase64.take(740_000),
+                    "localFilePath" to localFilePath.take(500),
                     "consentVerified" to true,
                     "encryptionAlgorithm" to "AES-256-GCM",
                     "createdAt" to FieldValue.serverTimestamp(),
@@ -844,28 +1191,31 @@ class SecretGuardRepository(
     suspend fun deleteAllUserData() {
         val uid = requireUserId()
         try {
-            val recordings = db.collection("recordings").whereEqualTo("ownerUid", uid).get().await()
+            val recordings = db.collection("recordings").whereArrayContains("memberUids", uid).get().await()
             for (doc in recordings.documents) {
                 doc.reference.delete().await()
             }
-            val calls = db.collection("calls").whereEqualTo("ownerUid", uid).get().await()
+            val calls = db.collection("calls").whereArrayContains("memberUids", uid).get().await()
             for (doc in calls.documents) {
                 doc.reference.delete().await()
             }
-            val contacts = db.collection("contacts").whereEqualTo("ownerUid", uid).get().await()
+            val contacts = db.collection("contacts").whereArrayContains("memberUids", uid).get().await()
             for (doc in contacts.documents) {
                 doc.reference.delete().await()
             }
-            val conversations = db.collection("conversations").whereEqualTo("ownerUid", uid).get().await()
+            val conversations = db.collection("conversations").whereArrayContains("memberUids", uid).get().await()
             for (conv in conversations.documents) {
                 val messages = conv.reference.collection("messages")
-                    .whereEqualTo("ownerUid", uid)
+                    .whereArrayContains("memberUids", uid)
                     .get()
                     .await()
                 for (msg in messages.documents) {
                     msg.reference.delete().await()
                 }
                 conv.reference.delete().await()
+            }
+            runCatching {
+                db.collection("users").document(uid).collection("private").document("settings").delete().await()
             }
             db.collection("users").document(uid).delete().await()
         } catch (e: CancellationException) {
@@ -874,6 +1224,16 @@ class SecretGuardRepository(
             handleFirestoreError(e, OperationType.DELETE, "users/$uid")
             throw e
         }
+    }
+
+    private fun deriveHandle(email: String, displayName: String, uid: String): String {
+        val base = if (email.isNotBlank() && email.contains("@")) {
+            email.substringBefore("@").lowercase(Locale.US).replace(Regex("[^a-z0-9._\\-]"), "")
+        } else {
+            displayName.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "")
+        }
+        val cleanBase = base.ifBlank { "user" }.take(24)
+        return "@${cleanBase}_${uid.take(4).lowercase(Locale.US)}"
     }
 
     private fun formatDuration(seconds: Long): String {

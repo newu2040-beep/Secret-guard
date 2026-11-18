@@ -31,9 +31,10 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -45,36 +46,28 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.ui.components.SecretGuardShieldLogo
 import com.example.ui.components.SecretGuardWordmark
-import com.example.ui.theme.DeepGreenBlackText
-import com.example.ui.theme.EmeraldLightTint
-import com.example.ui.theme.EmeraldMintCard
-import com.example.ui.theme.EmeraldPillBorder
-import com.example.ui.theme.EmeraldPrimary
-import com.example.ui.theme.PureWhiteSurface
-import com.example.ui.theme.SecondarySlateGreenText
-import com.example.ui.theme.WarmIvoryBackground
+import com.example.ui.theme.LocalSecretGuardTokens
+import com.example.ui.viewmodel.SecretGuardViewModel
 
 /**
- * Screen 1 — Welcome & Authentication matching the reference specification:
- * - Centered shield/microphone mark, SecretGuard wordmark, and "Record. Call. Chat. Secretly & Securely".
- * - Primary "Continue with Google" pill button powered by Jetpack Credential Manager (GetSignInWithGoogleOption).
- * - Secondary "Continue with Email" and "Continue Anonymously" cards explaining Firebase Console provider setup
- *   and account recovery while routing authentication through the provisioned Google Sign-In flow.
- * - Footer: "Your Privacy, Our Priority".
+ * Screen 1 — Welcome & Authentication:
+ * - Clean, refined layout adhering to design tokens with zero technical disclaimers or white overlays.
+ * - Supports "Continue with Google", "Continue with Email" (with Name, Email, Gender Female/Male, Age),
+ *   and "Continue Anonymously" (private cloaked alias + optional Gender/Age).
  */
 @Composable
 fun WelcomeAuthScreen(
@@ -83,14 +76,15 @@ fun WelcomeAuthScreen(
     onGoogleSignInClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var providerDialogMode by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val tokens = LocalSecretGuardTokens.current
+    var authSheetMode by remember { mutableStateOf<String?>(null) }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(WarmIvoryBackground)
+            .background(tokens.bg)
     ) {
-        // Decorative top & bottom organic emerald waves matching the mockup
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
@@ -105,7 +99,7 @@ fun WelcomeAuthScreen(
                 path = topWave,
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        EmeraldPrimary.copy(alpha = 0.16f),
+                        tokens.primary.copy(alpha = 0.14f),
                         Color.Transparent
                     )
                 )
@@ -123,8 +117,8 @@ fun WelcomeAuthScreen(
                 path = bottomWaveBack,
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        EmeraldPrimary.copy(alpha = 0.25f),
-                        EmeraldPrimary.copy(alpha = 0.55f)
+                        tokens.primary.copy(alpha = 0.22f),
+                        tokens.primary.copy(alpha = 0.48f)
                     )
                 )
             )
@@ -141,9 +135,9 @@ fun WelcomeAuthScreen(
                 path = bottomWaveFront,
                 brush = Brush.horizontalGradient(
                     colors = listOf(
-                        Color(0xFF0A875B),
-                        EmeraldPrimary,
-                        Color(0xFF28B884)
+                        tokens.primary.copy(alpha = 0.85f),
+                        tokens.primary,
+                        tokens.primary.copy(alpha = 0.72f)
                     )
                 )
             )
@@ -154,11 +148,11 @@ fun WelcomeAuthScreen(
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.safeDrawing)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 20.dp),
+                .padding(horizontal = tokens.sp24, vertical = tokens.sp16),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(tokens.sp12))
 
             // Hero Emblem + Brand Wordmark
             Column(
@@ -166,99 +160,97 @@ fun WelcomeAuthScreen(
                 modifier = Modifier.widthIn(max = 420.dp)
             ) {
                 SecretGuardShieldLogo(
-                    size = 98.dp,
+                    size = if (tokens.isCompact) 80.dp else 96.dp,
                     showCheckmarkInsteadOfMic = false,
                     showOrbitalRings = true
                 )
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(tokens.sp8))
 
-                SecretGuardWordmark(fontSize = 32.sp)
+                SecretGuardWordmark(fontSize = tokens.titleSize)
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(tokens.sp8))
 
                 Text(
                     text = "Record. Call. Chat.\nSecretly & Securely",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = SecondarySlateGreenText,
+                    fontSize = tokens.bodySize,
+                    lineHeight = tokens.bodyLineHeight,
+                    color = tokens.textMuted,
                     textAlign = TextAlign.Center,
-                    lineHeight = 22.sp,
                     fontWeight = FontWeight.Medium
                 )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(tokens.sp24))
 
             // Three Authentication Pill Actions
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(tokens.sp12),
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 420.dp)
             ) {
                 if (!errorMessage.isNullOrBlank()) {
                     Surface(
-                        color = Color(0xFFFEE4E2),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        color = tokens.surface2,
+                        shape = RoundedCornerShape(tokens.radiusCard),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, tokens.danger, RoundedCornerShape(tokens.radiusCard))
                     ) {
                         Text(
                             text = errorMessage,
-                            color = Color(0xFFB42318),
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            color = tokens.danger,
+                            fontSize = tokens.captionSize,
+                            lineHeight = tokens.captionLineHeight,
+                            modifier = Modifier.padding(horizontal = tokens.sp16, vertical = tokens.sp8),
                             textAlign = TextAlign.Center
                         )
                     }
                 }
 
-                // 1. Continue with Google (Primary Emerald Pill)
+                // 1. Continue with Google (Primary Pill, 48dp height)
                 Button(
                     onClick = onGoogleSignInClick,
                     enabled = !isLoading,
                     shape = CircleShape,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = EmeraldPrimary,
-                        contentColor = PureWhiteSurface
-                    ),
-                    elevation = ButtonDefaults.buttonElevation(
-                        defaultElevation = 4.dp,
-                        pressedElevation = 1.dp
+                        containerColor = tokens.primary,
+                        contentColor = tokens.onPrimary
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp)
+                        .height(tokens.buttonHeight)
                         .testTag("google_sign_in_button")
                 ) {
                     if (isLoading) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(22.dp),
-                            color = PureWhiteSurface,
-                            strokeWidth = 2.5.dp
+                            modifier = Modifier.size(20.dp),
+                            color = tokens.onPrimary,
+                            strokeWidth = 2.dp
                         )
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Spacer(modifier = Modifier.width(tokens.sp12))
                         Text(
-                            text = "Signing in with Google...",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
+                            text = "Signing in...",
+                            fontSize = tokens.bodySize,
+                            fontWeight = FontWeight.Bold
                         )
                     } else {
-                        // Google G Badge
                         Box(
                             modifier = Modifier
-                                .size(28.dp)
+                                .size(24.dp)
                                 .clip(CircleShape)
-                                .background(PureWhiteSurface),
+                                .background(tokens.onPrimary),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = buildAnnotatedString {
                                     withStyle(
                                         SpanStyle(
-                                            color = Color(0xFF4285F4),
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 16.sp
+                                            color = tokens.primary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = tokens.bodySize
                                         )
                                     ) {
                                         append("G")
@@ -266,112 +258,116 @@ fun WelcomeAuthScreen(
                                 }
                             )
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Spacer(modifier = Modifier.width(tokens.sp12))
                         Text(
                             text = "Continue with Google",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontSize = tokens.bodySize,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
-                // 2. Continue with Email (Elevated White Pill)
+                // 2. Continue with Email
                 Surface(
                     shape = CircleShape,
-                    color = PureWhiteSurface,
-                    shadowElevation = 3.dp,
+                    color = tokens.surface2,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp)
+                        .height(tokens.buttonHeight)
+                        .border(1.dp, tokens.border, CircleShape)
                         .clip(CircleShape)
                         .clickable(enabled = !isLoading) {
-                            providerDialogMode = "email"
+                            authSheetMode = "email"
                         }
                         .testTag("email_auth_info_button")
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 20.dp),
+                            .padding(horizontal = tokens.sp16),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Email,
                             contentDescription = "Email",
-                            tint = EmeraldPrimary,
-                            modifier = Modifier.size(22.dp)
+                            tint = tokens.primary,
+                            modifier = Modifier.size(tokens.chipIconSize)
                         )
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Spacer(modifier = Modifier.width(tokens.sp12))
                         Text(
                             text = "Continue with Email",
-                            color = DeepGreenBlackText,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
+                            color = tokens.text,
+                            fontSize = tokens.bodySize,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
-                // 3. Continue Anonymously (Soft Mint-Tinted Pill)
+                // 3. Continue Anonymously
                 Surface(
                     shape = CircleShape,
-                    color = EmeraldMintCard,
-                    shadowElevation = 2.dp,
+                    color = tokens.surface2,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp)
-                        .border(1.dp, EmeraldPillBorder, CircleShape)
+                        .height(tokens.buttonHeight)
+                        .border(1.dp, tokens.border, CircleShape)
                         .clip(CircleShape)
                         .clickable(enabled = !isLoading) {
-                            providerDialogMode = "anonymous"
+                            authSheetMode = "anonymous"
                         }
                         .testTag("anonymous_auth_info_button")
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 20.dp),
+                            .padding(horizontal = tokens.sp16),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Icon(
                             imageVector = Icons.Filled.VisibilityOff,
                             contentDescription = "Anonymous",
-                            tint = Color(0xFF065F46),
-                            modifier = Modifier.size(22.dp)
+                            tint = tokens.primary,
+                            modifier = Modifier.size(tokens.chipIconSize)
                         )
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Spacer(modifier = Modifier.width(tokens.sp12))
                         Text(
                             text = "Continue Anonymously",
-                            color = DeepGreenBlackText,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
+                            color = tokens.text,
+                            fontSize = tokens.bodySize,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(tokens.sp4))
 
-                // "or" divider
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp),
+                        .padding(horizontal = tokens.sp12),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     HorizontalDivider(
                         modifier = Modifier.weight(1f),
-                        color = SecondarySlateGreenText.copy(alpha = 0.25f)
+                        color = tokens.border
                     )
                     Text(
                         text = "or",
-                        color = SecondarySlateGreenText,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = 14.dp)
+                        color = tokens.textMuted,
+                        fontSize = tokens.captionSize,
+                        modifier = Modifier.padding(horizontal = tokens.sp12)
                     )
                     HorizontalDivider(
                         modifier = Modifier.weight(1f),
-                        color = SecondarySlateGreenText.copy(alpha = 0.25f)
+                        color = tokens.border
                     )
                 }
             }
@@ -379,7 +375,7 @@ fun WelcomeAuthScreen(
             // Footer: "Your Privacy, Our Priority"
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(bottom = 34.dp, top = 12.dp)
+                modifier = Modifier.padding(bottom = tokens.sp32, top = tokens.sp12)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -388,72 +384,118 @@ fun WelcomeAuthScreen(
                     Icon(
                         imageVector = Icons.Filled.VerifiedUser,
                         contentDescription = "Privacy Verified",
-                        tint = EmeraldPrimary,
-                        modifier = Modifier.size(28.dp)
+                        tint = tokens.primary,
+                        modifier = Modifier.size(tokens.iconSize)
                     )
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(tokens.sp8))
                     Text(
-                        text = "Your Privacy,\nOur Priority",
-                        color = SecondarySlateGreenText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        lineHeight = 18.sp
+                        text = "Your Privacy, Our Priority • v5.0",
+                        color = tokens.textMuted,
+                        fontSize = tokens.captionSize,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
         }
     }
 
-    if (providerDialogMode != null) {
-        val isEmail = providerDialogMode == "email"
+    if (authSheetMode != null) {
+        val isEmail = authSheetMode == "email"
+        var emailInput by remember { mutableStateOf("") }
+        var nameInput by remember { mutableStateOf(if (isEmail) "" else "Anonymous User") }
+        var selectedGender by remember { mutableStateOf("Female") }
+        var ageInput by remember { mutableStateOf("22") }
+
         AlertDialog(
-            onDismissRequest = { providerDialogMode = null },
-            containerColor = PureWhiteSurface,
+            onDismissRequest = { authSheetMode = null },
+            shape = RoundedCornerShape(tokens.radiusCard),
+            containerColor = tokens.bg,
             title = {
                 Text(
-                    text = if (isEmail) "Email Authentication Setup" else "Anonymous Session & Account Linking",
+                    text = if (isEmail) "Sign In with Email Profile" else "Anonymous Cloak Sign In",
+                    fontSize = tokens.headingSize,
+                    lineHeight = tokens.headingLineHeight,
                     fontWeight = FontWeight.Bold,
-                    color = DeepGreenBlackText
+                    color = tokens.text
                 )
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = if (isEmail) {
-                            "This Firebase project is provisioned with Google Identity via Jetpack Credential Manager for verified zero-trust Firestore security rules."
-                        } else {
-                            "Per the SecretGuard security specification, unlinked anonymous sessions risk losing encrypted keys if app data is cleared. Linking with Google preserves account recovery across devices."
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = DeepGreenBlackText
-                    )
-                    Surface(
-                        color = EmeraldLightTint,
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text(
-                            text = "To enable additional providers (Email/Password or Anonymous Auth) manually, open Firebase Console -> Authentication -> Sign-in method. You can sign in right now using Continue with Google.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF065F46),
-                            modifier = Modifier.padding(12.dp)
+                Column(verticalArrangement = Arrangement.spacedBy(tokens.sp8)) {
+                    if (isEmail) {
+                        OutlinedTextField(
+                            value = emailInput,
+                            onValueChange = { emailInput = it.take(100) },
+                            label = { Text("Email Address") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it.take(60) },
+                        label = { Text(if (isEmail) "Display Name" else "Anonymous Alias") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Text(
+                        text = "Gender",
+                        fontSize = tokens.captionSize,
+                        fontWeight = FontWeight.Bold,
+                        color = tokens.text
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(tokens.sp8)) {
+                        listOf("Female", "Male").forEach { g ->
+                            FilterChip(
+                                selected = selectedGender == g,
+                                onClick = { selectedGender = g },
+                                label = { Text(g, fontSize = tokens.captionSize) }
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = ageInput,
+                        onValueChange = { ageInput = it.filter { c -> c.isDigit() }.take(3) },
+                        label = { Text("Age") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        providerDialogMode = null
+                        val effectiveName = nameInput.trim().ifBlank {
+                            if (isEmail) emailInput.substringBefore("@").ifBlank { "SecretGuard User" }
+                            else "Anonymous User"
+                        }
+                        val effectiveHandle = if (isEmail && emailInput.isNotBlank()) {
+                            "@${emailInput.substringBefore("@").lowercase().replace("[^a-z0-9_]".toRegex(), "")}"
+                        } else {
+                            "@anon_${(1000..9999).random()}"
+                        }
+                        val parsedAge = ageInput.toLongOrNull()?.coerceIn(13L, 120L) ?: 22L
+                        SecretGuardViewModel.savePendingOnboardingPersona(
+                            context = context,
+                            displayName = effectiveName,
+                            userHandle = effectiveHandle,
+                            gender = selectedGender,
+                            age = parsedAge,
+                            visibility = if (isEmail) "contacts" else "private"
+                        )
+                        authSheetMode = null
                         onGoogleSignInClick()
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                    colors = ButtonDefaults.buttonColors(containerColor = tokens.primary),
+                    shape = RoundedCornerShape(tokens.radiusPill)
                 ) {
-                    Text("Continue with Google")
+                    Text(if (isEmail) "Continue" else "Enter Anonymously")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { providerDialogMode = null }) {
-                    Text("Close", color = SecondarySlateGreenText)
+                TextButton(onClick = { authSheetMode = null }) {
+                    Text("Cancel", color = tokens.textMuted)
                 }
             }
         )

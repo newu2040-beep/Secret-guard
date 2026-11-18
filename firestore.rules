@@ -21,15 +21,37 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isValidMemberUids(members) {
+      return members is list &&
+             members.size() >= 1 &&
+             members.size() <= 8 &&
+             members[0] is string &&
+             members[0].size() >= 1 &&
+             members[0].size() <= 128 &&
+             request.auth.uid in members;
+    }
+
     function isValidUserProfile(data) {
       return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
              data.uid == request.auth.uid &&
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
-             data.email is string && data.email.size() <= 120 &&
-             data.photoUrl is string && data.photoUrl.size() <= 500 &&
+             data.userHandle is string && data.userHandle.size() >= 1 && data.userHandle.size() <= 120 &&
+             data.photoUrl is string && data.photoUrl.size() <= 250000 &&
+             (!('gender' in data) || (data.gender is string && data.gender in ['', 'Female', 'Male'])) &&
+             (!('age' in data) || (data.age is int && data.age >= 0 && data.age <= 120)) &&
+             (!('requireCallApproval' in data) || data.requireCallApproval is bool) &&
              data.onlineStatus is string && data.onlineStatus in ['online', 'offline'] &&
+             data.directoryVisible is bool &&
              data.accountType is string && data.accountType in ['google'] &&
              data.profileVisibility is string && data.profileVisibility in ['contacts', 'private', 'public'] &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidPrivateSettings(data) {
+      return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+             data.uid == request.auth.uid &&
+             data.email is string && data.email.size() <= 120 &&
              data.appLockEnabled is bool &&
              data.autoRecordCalls is bool &&
              data.notificationAlert is bool &&
@@ -43,23 +65,30 @@ service cloud.firestore {
 
     function isValidContact(data) {
       return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
-             data.ownerUid == request.auth.uid &&
+             data.targetUid is string && data.targetUid.size() >= 1 && data.targetUid.size() <= 128 &&
+             isValidMemberUids(data.memberUids) &&
+             data.requesterName is string && data.requesterName.size() >= 1 && data.requesterName.size() <= 80 &&
+             data.requesterHandle is string && data.requesterHandle.size() >= 1 && data.requesterHandle.size() <= 120 &&
              data.contactName is string && data.contactName.size() >= 1 && data.contactName.size() <= 80 &&
              data.contactHandle is string && data.contactHandle.size() >= 1 && data.contactHandle.size() <= 120 &&
-             data.avatarKey is string && data.avatarKey.size() >= 1 && data.avatarKey.size() <= 40 &&
+             data.avatarKey is string && data.avatarKey.size() >= 1 && data.avatarKey.size() <= 250000 &&
              data.status is string && data.status in ['accepted', 'pending', 'blocked'] &&
              data.presenceState is string && data.presenceState in ['online', 'offline', 'away'] &&
              data.lastActivityText is string && data.lastActivityText.size() >= 1 && data.lastActivityText.size() <= 160 &&
              data.lastActivityType is string && data.lastActivityType in ['video_call', 'audio_recording', 'message', 'audio_call'] &&
+             (!('callApproved' in data) || data.callApproved is bool) &&
+             (!('callApprovalRequestedBy' in data) || (data.callApprovalRequestedBy is string && data.callApprovalRequestedBy.size() <= 128)) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
     function isValidConversation(data) {
       return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
-             data.ownerUid == request.auth.uid &&
-             data.participantName is string && data.participantName.size() >= 1 && data.participantName.size() <= 80 &&
-             data.participantAvatarKey is string && data.participantAvatarKey.size() >= 1 && data.participantAvatarKey.size() <= 40 &&
+             data.partnerUid is string && data.partnerUid.size() >= 1 && data.partnerUid.size() <= 128 &&
+             isValidMemberUids(data.memberUids) &&
+             data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 80 &&
+             data.participantName is string && data.participantName.size() >= 1 && data.participantName.size() <= 160 &&
+             data.participantAvatarKey is string && data.participantAvatarKey.size() >= 1 && data.participantAvatarKey.size() <= 250000 &&
              data.presenceState is string && data.presenceState in ['online', 'offline', 'away'] &&
              data.lastMessageText is string && data.lastMessageText.size() <= 500 &&
              data.unreadCount is int && data.unreadCount >= 0 && data.unreadCount <= 999 &&
@@ -70,14 +99,15 @@ service cloud.firestore {
 
     function isValidMessage(data) {
       return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
-             data.ownerUid == request.auth.uid &&
+             isValidMemberUids(data.memberUids) &&
              data.conversationId is string && data.conversationId.size() >= 1 && data.conversationId.size() <= 128 &&
              data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128 &&
              data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
              data.isOutgoing is bool &&
              data.messageType is string && data.messageType in ['text', 'video', 'audio', 'image', 'recording'] &&
              data.text is string && data.text.size() <= 2000 &&
-             data.encryptedCiphertext is string && data.encryptedCiphertext.size() <= 4000 &&
+             data.encryptedCiphertext is string && data.encryptedCiphertext.size() >= 1 && data.encryptedCiphertext.size() <= 4000 &&
+             data.mediaBase64 is string && data.mediaBase64.size() <= 750000 &&
              data.mediaDurationSec is int && data.mediaDurationSec >= 0 && data.mediaDurationSec <= 36000 &&
              data.mediaLabel is string && data.mediaLabel.size() <= 120 &&
              data.deliveryState is string && data.deliveryState in ['sending', 'sent', 'delivered', 'read'] &&
@@ -87,29 +117,37 @@ service cloud.firestore {
 
     function isValidCall(data) {
       return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
-             data.ownerUid == request.auth.uid &&
-             data.participantName is string && data.participantName.size() >= 1 && data.participantName.size() <= 80 &&
-             data.participantAvatarKey is string && data.participantAvatarKey.size() >= 1 && data.participantAvatarKey.size() <= 40 &&
+             data.calleeUid is string && data.calleeUid.size() >= 1 && data.calleeUid.size() <= 128 &&
+             isValidMemberUids(data.memberUids) &&
+             data.callerName is string && data.callerName.size() >= 1 && data.callerName.size() <= 80 &&
+             data.participantName is string && data.participantName.size() >= 1 && data.participantName.size() <= 160 &&
+             data.participantAvatarKey is string && data.participantAvatarKey.size() >= 1 && data.participantAvatarKey.size() <= 250000 &&
              data.callType is string && data.callType in ['audio', 'video'] &&
              data.status is string && data.status in ['ringing', 'connected', 'ended', 'declined', 'missed'] &&
              data.consentState is string && data.consentState in ['none', 'requested', 'all_consented', 'withdrawn'] &&
+             data.callerConsent is bool &&
+             data.calleeConsent is bool &&
              data.isRecording is bool &&
-             (!data.isRecording || data.consentState == 'all_consented') &&
+             (!data.isRecording || (data.consentState == 'all_consented' && data.callerConsent == true && data.calleeConsent == true)) &&
              data.durationSec is int && data.durationSec >= 0 && data.durationSec <= 86400 &&
              data.encryptionVerified is bool &&
+             data.callerVideoFrame is string && data.callerVideoFrame.size() <= 450000 &&
+             data.calleeVideoFrame is string && data.calleeVideoFrame.size() <= 450000 &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
     function isValidRecording(data) {
       return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
-             data.ownerUid == request.auth.uid &&
+             isValidMemberUids(data.memberUids) &&
              data.callId is string && data.callId.size() >= 1 && data.callId.size() <= 128 &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
-             data.participantName is string && data.participantName.size() >= 1 && data.participantName.size() <= 80 &&
+             data.participantName is string && data.participantName.size() >= 1 && data.participantName.size() <= 160 &&
              data.mediaType is string && data.mediaType in ['audio', 'video'] &&
              data.durationSec is int && data.durationSec >= 1 && data.durationSec <= 86400 &&
              data.sizeBytes is int && data.sizeBytes >= 1 && data.sizeBytes <= 1073741824 &&
+             data.audioBase64 is string && data.audioBase64.size() <= 750000 &&
+             data.localFilePath is string && data.localFilePath.size() <= 500 &&
              data.consentVerified is bool && data.consentVerified == true &&
              data.encryptionAlgorithm is string && data.encryptionAlgorithm in ['AES-256-GCM'] &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
@@ -126,23 +164,21 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      allow get: if isSignedIn() && isValidId(uid) && request.auth.uid == uid;
-      allow list: if isSignedIn() && existing().uid == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || existing().directoryVisible == true);
+      allow list: if isSignedIn() && (existing().uid == request.auth.uid || existing().directoryVisible == true);
 
       allow create: if isSignedIn() &&
                        isValidId(uid) &&
                        request.auth.uid == uid &&
                        incoming().keys().hasAll([
-                         'uid', 'displayName', 'email', 'photoUrl', 'onlineStatus',
-                         'accountType', 'profileVisibility', 'appLockEnabled',
-                         'autoRecordCalls', 'notificationAlert', 'recordingQuality',
-                         'retentionDays', 'blockedUids', 'createdAt', 'updatedAt'
+                         'uid', 'displayName', 'userHandle', 'photoUrl', 'onlineStatus',
+                         'directoryVisible', 'accountType', 'profileVisibility',
+                         'createdAt', 'updatedAt'
                        ]) &&
                        incoming().keys().hasOnly([
-                         'uid', 'displayName', 'email', 'photoUrl', 'onlineStatus',
-                         'accountType', 'profileVisibility', 'appLockEnabled',
-                         'autoRecordCalls', 'notificationAlert', 'recordingQuality',
-                         'retentionDays', 'blockedUids', 'createdAt', 'updatedAt'
+                         'uid', 'displayName', 'userHandle', 'photoUrl', 'gender', 'age',
+                         'requireCallApproval', 'onlineStatus', 'directoryVisible',
+                         'accountType', 'profileVisibility', 'createdAt', 'updatedAt'
                        ]) &&
                        isValidUserProfile(incoming());
 
@@ -151,118 +187,167 @@ service cloud.firestore {
                        request.auth.uid == uid &&
                        isValidUserProfile(incoming()) &&
                        incoming().uid == existing().uid &&
-                       incoming().email == existing().email &&
                        incoming().accountType == existing().accountType &&
                        incoming().createdAt == existing().createdAt &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
-                         'displayName', 'photoUrl', 'onlineStatus', 'profileVisibility',
-                         'appLockEnabled', 'autoRecordCalls', 'notificationAlert',
-                         'recordingQuality', 'retentionDays', 'blockedUids', 'updatedAt'
+                         'displayName', 'userHandle', 'photoUrl', 'gender', 'age',
+                         'requireCallApproval', 'onlineStatus', 'directoryVisible',
+                         'profileVisibility', 'updatedAt'
                        ]);
 
       allow delete: if isSignedIn() && isValidId(uid) && request.auth.uid == uid;
+
+      match /private/{docId} {
+        allow get: if isSignedIn() && isValidId(uid) && isValidId(docId) && request.auth.uid == uid;
+        allow list: if isSignedIn() && request.auth.uid == uid && existing().uid == request.auth.uid;
+
+        allow create: if isSignedIn() &&
+                         isValidId(uid) &&
+                         isValidId(docId) &&
+                         request.auth.uid == uid &&
+                         incoming().keys().hasAll([
+                           'uid', 'email', 'appLockEnabled', 'autoRecordCalls',
+                           'notificationAlert', 'recordingQuality', 'retentionDays',
+                           'blockedUids', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'uid', 'email', 'appLockEnabled', 'autoRecordCalls',
+                           'notificationAlert', 'recordingQuality', 'retentionDays',
+                           'blockedUids', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidPrivateSettings(incoming());
+
+        allow update: if isSignedIn() &&
+                         isValidId(uid) &&
+                         isValidId(docId) &&
+                         request.auth.uid == uid &&
+                         isValidPrivateSettings(incoming()) &&
+                         incoming().uid == existing().uid &&
+                         incoming().email == existing().email &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'appLockEnabled', 'autoRecordCalls', 'notificationAlert',
+                           'recordingQuality', 'retentionDays', 'blockedUids', 'updatedAt'
+                         ]);
+
+        allow delete: if isSignedIn() && isValidId(uid) && isValidId(docId) && request.auth.uid == uid;
+      }
     }
 
     match /contacts/{contactId} {
-      allow get: if isSignedIn() && isValidId(contactId) && existing().ownerUid == request.auth.uid;
-      allow list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(contactId) && request.auth.uid in existing().memberUids;
+      allow list: if isSignedIn() && request.auth.uid in existing().memberUids;
 
       allow create: if isSignedIn() &&
                        isValidId(contactId) &&
                        incoming().keys().hasAll([
-                         'ownerUid', 'contactName', 'contactHandle', 'avatarKey',
-                         'status', 'presenceState', 'lastActivityText', 'lastActivityType',
-                         'createdAt', 'updatedAt'
+                         'ownerUid', 'targetUid', 'memberUids', 'requesterName', 'requesterHandle',
+                         'contactName', 'contactHandle', 'avatarKey', 'status', 'presenceState',
+                         'lastActivityText', 'lastActivityType', 'createdAt', 'updatedAt'
                        ]) &&
                        incoming().keys().hasOnly([
-                         'ownerUid', 'contactName', 'contactHandle', 'avatarKey',
-                         'status', 'presenceState', 'lastActivityText', 'lastActivityType',
-                         'createdAt', 'updatedAt'
+                         'ownerUid', 'targetUid', 'memberUids', 'requesterName', 'requesterHandle',
+                         'contactName', 'contactHandle', 'avatarKey', 'status', 'presenceState',
+                         'lastActivityText', 'lastActivityType', 'callApproved',
+                         'callApprovalRequestedBy', 'createdAt', 'updatedAt'
                        ]) &&
-                       isValidContact(incoming());
+                       isValidContact(incoming()) &&
+                       incoming().ownerUid == request.auth.uid;
 
       allow update: if isSignedIn() &&
                        isValidId(contactId) &&
                        isValidContact(incoming()) &&
-                       existing().ownerUid == request.auth.uid &&
+                       request.auth.uid in existing().memberUids &&
                        incoming().ownerUid == existing().ownerUid &&
+                       incoming().targetUid == existing().targetUid &&
+                       incoming().memberUids == existing().memberUids &&
                        incoming().createdAt == existing().createdAt &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
-                         'contactName', 'contactHandle', 'avatarKey', 'status',
-                         'presenceState', 'lastActivityText', 'lastActivityType', 'updatedAt'
+                         'requesterName', 'requesterHandle', 'contactName', 'contactHandle',
+                         'avatarKey', 'status', 'presenceState', 'lastActivityText',
+                         'lastActivityType', 'callApproved', 'callApprovalRequestedBy',
+                         'updatedAt'
                        ]);
 
-      allow delete: if isSignedIn() && isValidId(contactId) && existing().ownerUid == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(contactId) && request.auth.uid in existing().memberUids;
     }
 
     match /conversations/{conversationId} {
-      allow get: if isSignedIn() && isValidId(conversationId) && existing().ownerUid == request.auth.uid;
-      allow list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(conversationId) && request.auth.uid in existing().memberUids;
+      allow list: if isSignedIn() && request.auth.uid in existing().memberUids;
 
       allow create: if isSignedIn() &&
                        isValidId(conversationId) &&
                        incoming().keys().hasAll([
-                         'ownerUid', 'participantName', 'participantAvatarKey',
-                         'presenceState', 'lastMessageText', 'unreadCount',
-                         'encryptionProtocol', 'createdAt', 'updatedAt'
+                         'ownerUid', 'partnerUid', 'memberUids', 'ownerName',
+                         'participantName', 'participantAvatarKey', 'presenceState',
+                         'lastMessageText', 'unreadCount', 'encryptionProtocol',
+                         'createdAt', 'updatedAt'
                        ]) &&
                        incoming().keys().hasOnly([
-                         'ownerUid', 'participantName', 'participantAvatarKey',
-                         'presenceState', 'lastMessageText', 'unreadCount',
-                         'encryptionProtocol', 'createdAt', 'updatedAt'
+                         'ownerUid', 'partnerUid', 'memberUids', 'ownerName',
+                         'participantName', 'participantAvatarKey', 'presenceState',
+                         'lastMessageText', 'unreadCount', 'encryptionProtocol',
+                         'createdAt', 'updatedAt'
                        ]) &&
-                       isValidConversation(incoming());
+                       isValidConversation(incoming()) &&
+                       incoming().ownerUid == request.auth.uid;
 
       allow update: if isSignedIn() &&
                        isValidId(conversationId) &&
                        isValidConversation(incoming()) &&
-                       existing().ownerUid == request.auth.uid &&
+                       request.auth.uid in existing().memberUids &&
                        incoming().ownerUid == existing().ownerUid &&
+                       incoming().partnerUid == existing().partnerUid &&
+                       incoming().memberUids == existing().memberUids &&
                        incoming().encryptionProtocol == existing().encryptionProtocol &&
                        incoming().createdAt == existing().createdAt &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
-                         'participantName', 'participantAvatarKey', 'presenceState',
-                         'lastMessageText', 'unreadCount', 'updatedAt'
+                         'ownerName', 'participantName', 'participantAvatarKey',
+                         'presenceState', 'lastMessageText', 'unreadCount', 'updatedAt'
                        ]);
 
-      allow delete: if isSignedIn() && isValidId(conversationId) && existing().ownerUid == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(conversationId) && request.auth.uid in existing().memberUids;
 
       match /messages/{messageId} {
         allow get: if isSignedIn() &&
                       isValidId(conversationId) &&
                       isValidId(messageId) &&
-                      existing().ownerUid == request.auth.uid &&
+                      request.auth.uid in existing().memberUids &&
                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
-                      get(/databases/$(database)/documents/conversations/$(conversationId)).data.ownerUid == request.auth.uid;
+                      request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids;
 
-        allow list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && request.auth.uid in existing().memberUids;
 
         allow create: if isSignedIn() &&
                          isValidId(conversationId) &&
                          isValidId(messageId) &&
                          incoming().keys().hasAll([
-                           'ownerUid', 'conversationId', 'senderUid', 'senderName',
+                           'ownerUid', 'memberUids', 'conversationId', 'senderUid', 'senderName',
                            'isOutgoing', 'messageType', 'text', 'encryptedCiphertext',
-                           'mediaDurationSec', 'mediaLabel', 'deliveryState',
+                           'mediaBase64', 'mediaDurationSec', 'mediaLabel', 'deliveryState',
                            'createdAt', 'updatedAt'
                          ]) &&
                          incoming().keys().hasOnly([
-                           'ownerUid', 'conversationId', 'senderUid', 'senderName',
+                           'ownerUid', 'memberUids', 'conversationId', 'senderUid', 'senderName',
                            'isOutgoing', 'messageType', 'text', 'encryptedCiphertext',
-                           'mediaDurationSec', 'mediaLabel', 'deliveryState',
+                           'mediaBase64', 'mediaDurationSec', 'mediaLabel', 'deliveryState',
                            'createdAt', 'updatedAt'
                          ]) &&
                          isValidMessage(incoming()) &&
+                         incoming().ownerUid == request.auth.uid &&
+                         incoming().senderUid == request.auth.uid &&
                          incoming().conversationId == conversationId &&
                          exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
-                         get(/databases/$(database)/documents/conversations/$(conversationId)).data.ownerUid == request.auth.uid;
+                         request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids;
 
         allow update: if isSignedIn() &&
                          isValidId(conversationId) &&
                          isValidId(messageId) &&
                          isValidMessage(incoming()) &&
-                         existing().ownerUid == request.auth.uid &&
+                         request.auth.uid in existing().memberUids &&
                          incoming().ownerUid == existing().ownerUid &&
+                         incoming().memberUids == existing().memberUids &&
                          incoming().conversationId == existing().conversationId &&
                          incoming().senderUid == existing().senderUid &&
                          incoming().createdAt == existing().createdAt &&
@@ -270,72 +355,85 @@ service cloud.firestore {
                            'text', 'encryptedCiphertext', 'deliveryState', 'updatedAt'
                          ]) &&
                          exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
-                         get(/databases/$(database)/documents/conversations/$(conversationId)).data.ownerUid == request.auth.uid;
+                         request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids;
 
         allow delete: if isSignedIn() &&
                          isValidId(conversationId) &&
                          isValidId(messageId) &&
-                         existing().ownerUid == request.auth.uid;
+                         request.auth.uid in existing().memberUids;
       }
     }
 
     match /calls/{callId} {
-      allow get: if isSignedIn() && isValidId(callId) && existing().ownerUid == request.auth.uid;
-      allow list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(callId) && request.auth.uid in existing().memberUids;
+      allow list: if isSignedIn() && request.auth.uid in existing().memberUids;
 
       allow create: if isSignedIn() &&
                        isValidId(callId) &&
                        incoming().keys().hasAll([
-                         'ownerUid', 'participantName', 'participantAvatarKey',
-                         'callType', 'status', 'consentState', 'isRecording',
-                         'durationSec', 'encryptionVerified', 'createdAt', 'updatedAt'
+                         'ownerUid', 'calleeUid', 'memberUids', 'callerName',
+                         'participantName', 'participantAvatarKey', 'callType',
+                         'status', 'consentState', 'callerConsent', 'calleeConsent',
+                         'isRecording', 'durationSec', 'encryptionVerified',
+                         'callerVideoFrame', 'calleeVideoFrame', 'createdAt', 'updatedAt'
                        ]) &&
                        incoming().keys().hasOnly([
-                         'ownerUid', 'participantName', 'participantAvatarKey',
-                         'callType', 'status', 'consentState', 'isRecording',
-                         'durationSec', 'encryptionVerified', 'createdAt', 'updatedAt'
+                         'ownerUid', 'calleeUid', 'memberUids', 'callerName',
+                         'participantName', 'participantAvatarKey', 'callType',
+                         'status', 'consentState', 'callerConsent', 'calleeConsent',
+                         'isRecording', 'durationSec', 'encryptionVerified',
+                         'callerVideoFrame', 'calleeVideoFrame', 'createdAt', 'updatedAt'
                        ]) &&
-                       isValidCall(incoming());
+                       isValidCall(incoming()) &&
+                       incoming().ownerUid == request.auth.uid;
 
       allow update: if isSignedIn() &&
                        isValidId(callId) &&
                        isValidCall(incoming()) &&
-                       existing().ownerUid == request.auth.uid &&
+                       request.auth.uid in existing().memberUids &&
                        !(existing().status in ['ended', 'declined', 'missed']) &&
                        incoming().ownerUid == existing().ownerUid &&
-                       incoming().participantName == existing().participantName &&
+                       incoming().calleeUid == existing().calleeUid &&
+                       incoming().memberUids.hasAll(existing().memberUids) &&
+                       incoming().callerName == existing().callerName &&
                        incoming().callType == existing().callType &&
                        incoming().createdAt == existing().createdAt &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
-                         'status', 'consentState', 'isRecording', 'durationSec', 'updatedAt'
+                         'memberUids', 'participantName', 'status', 'consentState',
+                         'callerConsent', 'calleeConsent', 'isRecording', 'durationSec',
+                         'callerVideoFrame', 'calleeVideoFrame', 'updatedAt'
                        ]);
 
-      allow delete: if isSignedIn() && isValidId(callId) && existing().ownerUid == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(callId) && request.auth.uid in existing().memberUids;
     }
 
     match /recordings/{recordingId} {
-      allow get: if isSignedIn() && isValidId(recordingId) && existing().ownerUid == request.auth.uid;
-      allow list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(recordingId) && request.auth.uid in existing().memberUids;
+      allow list: if isSignedIn() && request.auth.uid in existing().memberUids;
 
       allow create: if isSignedIn() &&
                        isValidId(recordingId) &&
                        incoming().keys().hasAll([
-                         'ownerUid', 'callId', 'title', 'participantName',
-                         'mediaType', 'durationSec', 'sizeBytes', 'consentVerified',
-                         'encryptionAlgorithm', 'createdAt', 'updatedAt'
+                         'ownerUid', 'memberUids', 'callId', 'title', 'participantName',
+                         'mediaType', 'durationSec', 'sizeBytes', 'audioBase64',
+                         'localFilePath', 'consentVerified', 'encryptionAlgorithm',
+                         'createdAt', 'updatedAt'
                        ]) &&
                        incoming().keys().hasOnly([
-                         'ownerUid', 'callId', 'title', 'participantName',
-                         'mediaType', 'durationSec', 'sizeBytes', 'consentVerified',
-                         'encryptionAlgorithm', 'createdAt', 'updatedAt'
+                         'ownerUid', 'memberUids', 'callId', 'title', 'participantName',
+                         'mediaType', 'durationSec', 'sizeBytes', 'audioBase64',
+                         'localFilePath', 'consentVerified', 'encryptionAlgorithm',
+                         'createdAt', 'updatedAt'
                        ]) &&
-                       isValidRecording(incoming());
+                       isValidRecording(incoming()) &&
+                       incoming().ownerUid == request.auth.uid;
 
       allow update: if isSignedIn() &&
                        isValidId(recordingId) &&
                        isValidRecording(incoming()) &&
-                       existing().ownerUid == request.auth.uid &&
+                       request.auth.uid in existing().memberUids &&
                        incoming().ownerUid == existing().ownerUid &&
+                       incoming().memberUids == existing().memberUids &&
                        incoming().callId == existing().callId &&
                        incoming().mediaType == existing().mediaType &&
                        incoming().durationSec == existing().durationSec &&
@@ -344,10 +442,10 @@ service cloud.firestore {
                        incoming().encryptionAlgorithm == existing().encryptionAlgorithm &&
                        incoming().createdAt == existing().createdAt &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
-                         'title', 'updatedAt'
+                         'title', 'localFilePath', 'updatedAt'
                        ]);
 
-      allow delete: if isSignedIn() && isValidId(recordingId) && existing().ownerUid == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(recordingId) && request.auth.uid in existing().memberUids;
     }
 
     match /reports/{reportId} {

@@ -1,6 +1,10 @@
 {
   "firestore": [
     {
+      "database": "(default)",
+      "rules": "firestore.rules"
+    },
+    {
       "database": "ai-studio-android-secretgu-d6c8395d-fcd9-4501-a272-a31426d8b039",
       "rules": "firestore.rules"
     }

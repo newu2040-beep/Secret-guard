@@ -15,74 +15,139 @@ import org.junit.Test
 class SecretGuardRepositoryRuleTest : FirestoreEmulatorTestBase() {
 
     @Test
-    fun ensureUserProfile_and_sendMessage_authenticatedOwner_succeeds() = runBlocking {
-        val aliceUid = signInTestUser(ALICE_EMAIL)
-        val repository = SecretGuardRepository(firestore, auth)
-
-        val profile = withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.ensureUserProfile(displayName = "Alice Secret", email = ALICE_EMAIL)
+    fun multiUser_contactAndMessageExchange_succeedsAcrossAliceAndBob() = runBlocking {
+        // 1. Register Bob in directory first
+        val bobUid = signInTestUser(BOB_EMAIL)
+        val repo = SecretGuardRepository(firestore, auth)
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.ensureUserProfile(displayName = "Bob Verifier", email = BOB_EMAIL)
         }
-        assertEquals(aliceUid, profile.uid)
 
-        val convId = withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.createConversationWithId(
-                participantName = "Priya Sharma",
-                participantAvatarKey = "priya"
+        // 2. Sign in as Alice, connect with Bob, and send an encrypted message
+        val aliceUid = signInTestUser(ALICE_EMAIL)
+        val aliceProfile = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.ensureUserProfile(displayName = "Alice Secret", email = ALICE_EMAIL)
+        }
+        assertEquals(aliceUid, aliceProfile.uid)
+
+        val contactId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.addTrustedContact(
+                contactName = "Bob Verifier",
+                contactHandle = "@bob",
+                targetUid = bobUid,
+                requesterName = "Alice Secret",
+                requesterHandle = aliceProfile.userHandle
             )
         }
-        assertTrue(convId.isNotBlank())
+        assertTrue(contactId.isNotBlank())
 
+        val convId = repo.buildDeterministicConversationId(aliceUid, bobUid)
         val msgId = withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.sendMessage(
+            repo.sendMessage(
                 conversationId = convId,
                 senderName = "Alice Secret",
-                text = "Hello Priya, encrypted check!"
+                text = "Real-time multi-user message from Alice to Bob!"
             )
         }
         assertTrue(msgId.isNotBlank())
 
-        val messages = withTimeout(FLOW_TIMEOUT_MS) {
-            repository.observeMessages(aliceUid, convId).first { list ->
+        // 3. Switch back to Bob and verify Bob observes Alice's message in real time
+        signInTestUser(BOB_EMAIL)
+        val bobMessages = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeMessages(bobUid, convId).first { list ->
                 list.any { it.id == msgId }
             }
         }
-        assertTrue(messages.any { it.id == msgId && it.encryptedCiphertext.startsWith("AES256GCM:") })
+        assertTrue(bobMessages.any { it.id == msgId && it.encryptedCiphertext.startsWith("AES256GCM:") })
+
+        // 4. Permanently delete the message and verify it is removed for all participants
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.deleteMessagePermanently(convId, msgId)
+        }
+        val afterDelete = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeMessages(bobUid, convId).first { list ->
+                list.none { it.id == msgId }
+            }
+        }
+        assertTrue(afterDelete.none { it.id == msgId })
     }
 
     @Test
-    fun callConsentAndRecording_enforcesConsentPipeline() = runBlocking {
-        val aliceUid = signInTestUser(ALICE_EMAIL)
-        val repository = SecretGuardRepository(firestore, auth)
+    fun multiUser_callSignalingAndMutualConsentRecording_succeeds() = runBlocking {
+        val bobUid = signInTestUser(BOB_EMAIL)
+        val repo = SecretGuardRepository(firestore, auth)
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.ensureUserProfile(displayName = "Bob Verifier", email = BOB_EMAIL)
+            repo.updateUserProfileCustomization(
+                displayName = "Bob HD Verifier",
+                userHandle = "@bob_hd",
+                photoUrl = "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
+                profileVisibility = "public",
+                gender = "Male",
+                age = 27L,
+                requireCallApproval = true
+            )
+        }
 
+        val aliceUid = signInTestUser(ALICE_EMAIL)
         val callId = withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.startCallSession(
-                participantName = "Priya Sharma",
-                participantAvatarKey = "priya",
+            repo.startCallSession(
+                calleeUid = bobUid,
+                callerName = "Alice Secret",
+                participantName = "Bob HD Verifier",
+                participantAvatarKey = "custom",
                 callType = "video"
             )
         }
 
+        // Alice invites a 3rd participant into the group call and streams a multiplexed AV1 voice+1080p packet
         withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.updateCallConsentAndRecording(
+            repo.addParticipantToCall(
+                callId = callId,
+                newParticipantUid = "charlie_group_uid_123",
+                newParticipantName = "Charlie Group"
+            )
+            repo.publishLiveVideoFrame(
+                callId = callId,
+                isCaller = true,
+                base64Jpeg = "AV1|101|dWxhd19hdWRpb19packet|amBlZ192aWRlb18xMDgwcA=="
+            )
+        }
+
+        // Bob accepts the incoming call
+        signInTestUser(BOB_EMAIL)
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.acceptIncomingCall(callId)
+        }
+
+        // Mutual recording consent granted by both caller & callee
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.updateCallConsentAndRecording(
                 callId = callId,
                 consentState = "all_consented",
+                callerConsent = true,
+                calleeConsent = true,
                 isRecording = true,
                 durationSec = 42L
             )
         }
 
+        // Alice ends the call and saves the consented recording
+        signInTestUser(ALICE_EMAIL)
         withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.endCallSession(
+            repo.endCallSession(
                 callId = callId,
-                participantName = "Priya Sharma",
+                participantName = "Bob HD Verifier",
                 callType = "video",
                 durationSec = 65L,
-                wasConsentedRecording = true
+                wasConsentedRecording = true,
+                recordedAudioBase64 = "AES256GCM_BIN:testpayload",
+                recordedSizeBytes = 16000L
             )
         }
 
         val recordings = withTimeout(FLOW_TIMEOUT_MS) {
-            repository.observeRecordings(aliceUid).first { list ->
+            repo.observeRecordings(aliceUid).first { list ->
                 list.any { it.callId == callId }
             }
         }
@@ -90,20 +155,39 @@ class SecretGuardRepositoryRuleTest : FirestoreEmulatorTestBase() {
     }
 
     @Test
-    fun crossUserAccess_failsWithPermissionDenied() = runBlocking {
-        signInTestUser(ALICE_EMAIL)
-        val aliceRepo = SecretGuardRepository(firestore, auth)
+    fun nonMemberAndPrivateSettingsAccess_failsWithPermissionDenied() = runBlocking {
+        val aliceUid = signInTestUser(ALICE_EMAIL)
+        val repo = SecretGuardRepository(firestore, auth)
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.ensureUserProfile(displayName = "Alice Secret", email = ALICE_EMAIL)
+        }
         val contactId = withTimeout(DEFAULT_TIMEOUT_MS) {
-            aliceRepo.addTrustedContact("Priya Sharma", "priya@secretguard.org")
+            repo.addTrustedContact(
+                contactName = "Self Vault",
+                contactHandle = "@alice",
+                targetUid = aliceUid
+            )
         }
 
-        // Switch to Bob and attempt to read Alice's contact document directly
+        // Switch to Bob (not in memberUids of Alice's self-contact) and attempt to read Alice's contact or private settings
         signInTestUser(BOB_EMAIL)
         try {
             withTimeout(DEFAULT_TIMEOUT_MS) {
                 firestore.collection("contacts").document(contactId).get().await()
             }
-            fail("Expected FirebaseFirestoreException PERMISSION_DENIED for cross-user read")
+            fail("Expected FirebaseFirestoreException PERMISSION_DENIED for non-member contact read")
+        } catch (e: Exception) {
+            val fsEx = e.unwrapFirestoreException()
+            assertNotNull("Expected FirebaseFirestoreException, got $e", fsEx)
+            assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, fsEx?.code)
+        }
+
+        try {
+            withTimeout(DEFAULT_TIMEOUT_MS) {
+                firestore.collection("users").document(aliceUid)
+                    .collection("private").document("settings").get().await()
+            }
+            fail("Expected FirebaseFirestoreException PERMISSION_DENIED for private settings read")
         } catch (e: Exception) {
             val fsEx = e.unwrapFirestoreException()
             assertNotNull("Expected FirebaseFirestoreException, got $e", fsEx)

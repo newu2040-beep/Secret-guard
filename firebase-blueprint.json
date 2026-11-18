@@ -2,189 +2,90 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Authenticated SecretGuard user profile and privacy preferences.",
+      "description": "Publicly discoverable directory profile for real-time multi-user search, gender (Female/Male), age, call approval preference, and presence.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "Firebase Auth UID of the user." },
-        "displayName": { "type": "string", "description": "Display name shown to trusted contacts." },
-        "email": { "type": "string", "description": "Authenticated Google email address." },
-        "photoUrl": { "type": "string", "description": "Profile avatar URL." },
-        "onlineStatus": { "type": "string", "enum": ["online", "offline"], "description": "Live presence status." },
-        "accountType": { "type": "string", "enum": ["google"], "description": "Authentication provider type." },
-        "profileVisibility": { "type": "string", "enum": ["contacts", "private", "public"], "description": "Who can view profile details." },
-        "appLockEnabled": { "type": "boolean", "description": "Whether local Keystore-backed PIN lock is active." },
-        "autoRecordCalls": { "type": "boolean", "description": "Whether consent-first call recording prompt is auto-triggered." },
-        "notificationAlert": { "type": "boolean", "description": "Whether activity notifications are enabled." },
-        "recordingQuality": { "type": "string", "enum": ["HD 720p", "FHD 1080p", "Audio Only"], "description": "Recording media quality setting." },
-        "retentionDays": { "type": "integer", "description": "Auto-cleanup retention window in days." },
-        "blockedUids": { "type": "array", "description": "Bounded list of blocked contact identifiers." },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "userHandle": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "gender": { "type": "string", "enum": ["", "Female", "Male"] },
+        "age": { "type": "integer" },
+        "requireCallApproval": { "type": "boolean" },
+        "onlineStatus": { "type": "string", "enum": ["online", "offline"] },
+        "directoryVisible": { "type": "boolean" },
+        "accountType": { "type": "string", "enum": ["google"] },
+        "profileVisibility": { "type": "string", "enum": ["contacts", "private", "public"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": [
-        "uid", "displayName", "email", "photoUrl", "onlineStatus",
-        "accountType", "profileVisibility", "appLockEnabled",
-        "autoRecordCalls", "notificationAlert", "recordingQuality",
-        "retentionDays", "blockedUids", "createdAt", "updatedAt"
+        "uid", "displayName", "userHandle", "photoUrl", "onlineStatus",
+        "directoryVisible", "accountType", "profileVisibility", "createdAt", "updatedAt"
+      ]
+    },
+    "UserPrivateSettings": {
+      "title": "UserPrivateSettings",
+      "description": "Owner-only private settings and PII.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "appLockEnabled": { "type": "boolean" },
+        "autoRecordCalls": { "type": "boolean" },
+        "notificationAlert": { "type": "boolean" },
+        "recordingQuality": { "type": "string", "enum": ["HD 720p", "FHD 1080p", "Audio Only"] },
+        "retentionDays": { "type": "integer" },
+        "blockedUids": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "uid", "email", "appLockEnabled", "autoRecordCalls", "notificationAlert",
+        "recordingQuality", "retentionDays", "blockedUids", "createdAt", "updatedAt"
       ]
     },
     "TrustedContact": {
       "title": "TrustedContact",
-      "description": "Trusted contact relationship and recent activity summary.",
+      "description": "Multi-user contact connection with mutual Call Approval status.",
       "type": "object",
       "properties": {
-        "ownerUid": { "type": "string", "description": "UID of the user who owns this contact entry." },
-        "contactName": { "type": "string", "description": "Display name of the contact." },
-        "contactHandle": { "type": "string", "description": "Email or handle of the contact." },
-        "avatarKey": { "type": "string", "description": "Avatar identifier key." },
-        "status": { "type": "string", "enum": ["accepted", "pending", "blocked"], "description": "Contact verification state." },
-        "presenceState": { "type": "string", "enum": ["online", "offline", "away"], "description": "Realtime presence status." },
-        "lastActivityText": { "type": "string", "description": "Recent activity summary label." },
-        "lastActivityType": { "type": "string", "enum": ["video_call", "audio_recording", "message", "audio_call"], "description": "Type of recent activity." },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+        "ownerUid": { "type": "string" },
+        "targetUid": { "type": "string" },
+        "memberUids": { "type": "array", "items": { "type": "string" } },
+        "requesterName": { "type": "string" },
+        "requesterHandle": { "type": "string" },
+        "contactName": { "type": "string" },
+        "contactHandle": { "type": "string" },
+        "avatarKey": { "type": "string" },
+        "status": { "type": "string", "enum": ["accepted", "pending", "blocked"] },
+        "presenceState": { "type": "string", "enum": ["online", "offline", "away"] },
+        "lastActivityText": { "type": "string" },
+        "lastActivityType": { "type": "string", "enum": ["video_call", "audio_recording", "message", "audio_call"] },
+        "callApproved": { "type": "boolean" },
+        "callApprovalRequestedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": [
-        "ownerUid", "contactName", "contactHandle", "avatarKey",
-        "status", "presenceState", "lastActivityText", "lastActivityType",
-        "createdAt", "updatedAt"
+        "ownerUid", "targetUid", "memberUids", "requesterName", "requesterHandle",
+        "contactName", "contactHandle", "avatarKey", "status", "presenceState",
+        "lastActivityText", "lastActivityType", "createdAt", "updatedAt"
       ]
-    },
-    "Conversation": {
-      "title": "Conversation",
-      "description": "Encrypted conversation thread with a trusted contact.",
-      "type": "object",
-      "properties": {
-        "ownerUid": { "type": "string", "description": "UID of the authenticated conversation owner." },
-        "participantName": { "type": "string", "description": "Name of the conversation partner." },
-        "participantAvatarKey": { "type": "string", "description": "Avatar key for the partner." },
-        "presenceState": { "type": "string", "enum": ["online", "offline", "away"], "description": "Partner presence state." },
-        "lastMessageText": { "type": "string", "description": "Preview of the most recent message." },
-        "unreadCount": { "type": "integer", "description": "Number of unread messages." },
-        "encryptionProtocol": { "type": "string", "enum": ["AES-256-GCM"], "description": "Active encryption protocol." },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last message." }
-      },
-      "required": [
-        "ownerUid", "participantName", "participantAvatarKey",
-        "presenceState", "lastMessageText", "unreadCount",
-        "encryptionProtocol", "createdAt", "updatedAt"
-      ]
-    },
-    "ChatMessage": {
-      "title": "ChatMessage",
-      "description": "Individual encrypted message or media attachment inside a conversation.",
-      "type": "object",
-      "properties": {
-        "ownerUid": { "type": "string", "description": "UID of the conversation owner for flat rule evaluation." },
-        "conversationId": { "type": "string", "description": "Parent conversation ID." },
-        "senderUid": { "type": "string", "description": "UID or identifier of the sender." },
-        "senderName": { "type": "string", "description": "Display name of the sender." },
-        "isOutgoing": { "type": "boolean", "description": "True if sent by the current user." },
-        "messageType": { "type": "string", "enum": ["text", "video", "audio", "image", "recording"], "description": "Attachment or message type." },
-        "text": { "type": "string", "description": "Message body text." },
-        "encryptedCiphertext": { "type": "string", "description": "AES-256-GCM Base64 encrypted payload." },
-        "mediaDurationSec": { "type": "integer", "description": "Duration in seconds for audio/video messages." },
-        "mediaLabel": { "type": "string", "description": "Caption or waveform metadata for media." },
-        "deliveryState": { "type": "string", "enum": ["sending", "sent", "delivered", "read"], "description": "Message delivery/read receipt status." },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of update." }
-      },
-      "required": [
-        "ownerUid", "conversationId", "senderUid", "senderName",
-        "isOutgoing", "messageType", "text", "encryptedCiphertext",
-        "mediaDurationSec", "mediaLabel", "deliveryState",
-        "createdAt", "updatedAt"
-      ]
-    },
-    "CallSession": {
-      "title": "CallSession",
-      "description": "Audio or video call session with explicit recording consent tracking.",
-      "type": "object",
-      "properties": {
-        "ownerUid": { "type": "string", "description": "UID of the call owner." },
-        "participantName": { "type": "string", "description": "Remote participant name." },
-        "participantAvatarKey": { "type": "string", "description": "Remote participant avatar key." },
-        "callType": { "type": "string", "enum": ["audio", "video"], "description": "Audio or video call type." },
-        "status": { "type": "string", "enum": ["ringing", "connected", "ended", "declined", "missed"], "description": "Lifecycle status of the call." },
-        "consentState": { "type": "string", "enum": ["none", "requested", "all_consented", "withdrawn"], "description": "Explicit recording consent state." },
-        "isRecording": { "type": "boolean", "description": "True only when all participants have consented and recording is active." },
-        "durationSec": { "type": "integer", "description": "Elapsed call duration in seconds." },
-        "encryptionVerified": { "type": "boolean", "description": "Whether session encryption is verified." },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of call initiation." },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last state update." }
-      },
-      "required": [
-        "ownerUid", "participantName", "participantAvatarKey",
-        "callType", "status", "consentState", "isRecording",
-        "durationSec", "encryptionVerified", "createdAt", "updatedAt"
-      ]
-    },
-    "CallRecording": {
-      "title": "CallRecording",
-      "description": "Consented audio or video recording metadata managed in Storage Manager.",
-      "type": "object",
-      "properties": {
-        "ownerUid": { "type": "string", "description": "UID of the recording owner." },
-        "callId": { "type": "string", "description": "Associated call or voice note ID." },
-        "title": { "type": "string", "description": "Display title of the recording." },
-        "participantName": { "type": "string", "description": "Captured participant(s) name." },
-        "mediaType": { "type": "string", "enum": ["audio", "video"], "description": "Media format type." },
-        "durationSec": { "type": "integer", "description": "Recording length in seconds." },
-        "sizeBytes": { "type": "integer", "description": "Storage size in bytes." },
-        "consentVerified": { "type": "boolean", "description": "Must be true; confirms explicit consent was obtained." },
-        "encryptionAlgorithm": { "type": "string", "enum": ["AES-256-GCM"], "description": "Encryption cipher used." },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of update." }
-      },
-      "required": [
-        "ownerUid", "callId", "title", "participantName",
-        "mediaType", "durationSec", "sizeBytes", "consentVerified",
-        "encryptionAlgorithm", "createdAt", "updatedAt"
-      ]
-    },
-    "SecurityReport": {
-      "title": "SecurityReport",
-      "description": "User-submitted safety or moderation report.",
-      "type": "object",
-      "properties": {
-        "ownerUid": { "type": "string", "description": "UID of the reporting user." },
-        "targetName": { "type": "string", "description": "Name or handle of the reported entity." },
-        "category": { "type": "string", "enum": ["spam", "harassment", "unauthorized_recording", "impersonation", "other"], "description": "Report category." },
-        "details": { "type": "string", "description": "Detailed report description." },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of report submission." }
-      },
-      "required": ["ownerUid", "targetName", "category", "details", "createdAt"]
     }
   },
   "firestore": {
     "/users/{uid}": {
       "schema": { "$ref": "#/entities/UserProfile" },
-      "description": "User profiles and privacy settings keyed by Firebase Auth UID."
+      "description": "Public directory profile document."
+    },
+    "/users/{uid}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateSettings" },
+      "description": "Owner-only private settings."
     },
     "/contacts/{contactId}": {
       "schema": { "$ref": "#/entities/TrustedContact" },
-      "description": "Trusted contacts and activity feed items scoped by ownerUid."
-    },
-    "/conversations/{conversationId}": {
-      "schema": { "$ref": "#/entities/Conversation" },
-      "description": "Encrypted conversations scoped by ownerUid."
-    },
-    "/conversations/{conversationId}/messages/{messageId}": {
-      "schema": { "$ref": "#/entities/ChatMessage" },
-      "description": "Messages inside a conversation, denormalized with ownerUid."
-    },
-    "/calls/{callId}": {
-      "schema": { "$ref": "#/entities/CallSession" },
-      "description": "Audio/video call sessions and consent state scoped by ownerUid."
-    },
-    "/recordings/{recordingId}": {
-      "schema": { "$ref": "#/entities/CallRecording" },
-      "description": "Consented call and audio recordings metadata scoped by ownerUid."
-    },
-    "/reports/{reportId}": {
-      "schema": { "$ref": "#/entities/SecurityReport" },
-      "description": "User-submitted safety reports scoped by ownerUid."
+      "description": "Shared contact document with mutual Call Approval."
     }
   }
 }

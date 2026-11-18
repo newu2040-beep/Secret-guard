@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -36,13 +39,19 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SentimentSatisfiedAlt
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -50,13 +59,13 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -66,166 +75,202 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.data.model.ChatMessage
 import com.example.data.model.Conversation
+import com.example.data.model.UserProfile
+import com.example.ui.components.Base64BitmapImage
 import com.example.ui.components.ContactAvatarView
 import com.example.ui.components.OnlinePresenceRow
-import com.example.ui.theme.DeepGreenBlackText
-import com.example.ui.theme.EmeraldLightTint
-import com.example.ui.theme.EmeraldMintCard
-import com.example.ui.theme.EmeraldOutgoingBubble
-import com.example.ui.theme.EmeraldPillBorder
-import com.example.ui.theme.EmeraldPrimary
-import com.example.ui.theme.MutedCaptionText
-import com.example.ui.theme.PureWhiteSurface
-import com.example.ui.theme.SecondarySlateGreenText
-import com.example.ui.theme.WarmIvoryBackground
+import com.example.ui.components.SecretGuardEmptyState
+import com.example.ui.components.SecretGuardIconButton
+import com.example.ui.theme.LocalSecretGuardTokens
 import com.example.ui.viewmodel.UiState
 import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlinx.coroutines.delay
 
 /**
- * Screen 4 — Conversation matching the reference specification:
- * - Header with contact ("Priya Sharma"), live presence ("Online"), audio-call and video-call actions.
- * - Incoming/outgoing message bubbles, timestamps, delivery/read checkmarks.
- * - Rich Mountain-Lake Video card bubble ("00:00:15") and Audio Waveform bubble ("00:00:12").
- * - Pill composer with attachment picker (Android Photo Picker + Voice/Video attachment options),
- *   text field, emoji quick picker, and emerald send button.
+ * Screen 4 — Real-Time Multi-User Encrypted Conversation:
+ * - Header with partner identity, live presence from Firestore `/users`, and real audio/Full HD video call buttons.
+ * - Real-time message synchronization across devices and live read receipts.
+ * - HD Photo (`ImageOnly`), HD Video (`VideoOnly` with keyframe + duration), and Document (`OpenDocument`) attachments.
+ * - Real hardware `MediaRecorder` voice notes and real `MediaPlayer` audio playback.
+ * - Permanent message and voice note deletion (`onDeleteMessagePermanently`) for all participants in real time.
  */
 @Composable
 fun ConversationScreen(
+    currentUserId: String,
     conversation: Conversation?,
+    directoryUsersState: UiState<List<UserProfile>>,
     messagesState: UiState<List<ChatMessage>>,
+    playingMediaId: String?,
+    liveMicAmplitude: Float,
     onBackClick: () -> Unit,
-    onStartAudioCall: (String, String) -> Unit,
-    onStartVideoCall: (String, String) -> Unit,
+    onStartAudioCall: (String, String, String) -> Unit,
+    onStartVideoCall: (String, String, String) -> Unit,
     onSendMessage: (String, String, Long, String) -> Unit,
+    onSendImageAttachment: (Uri) -> Unit,
+    onSendVideoAttachment: (Uri) -> Unit,
+    onSendDocumentAttachment: (Uri) -> Unit,
+    onDeleteMessagePermanently: (ChatMessage) -> Unit,
+    onStartHardwareVoiceRecording: () -> Boolean,
+    onCancelHardwareVoiceRecording: () -> Unit,
+    onStopAndSendVoiceMessage: (Long) -> Unit,
+    onTogglePlayAudioMessage: (ChatMessage) -> Unit,
+    onDecryptMessage: (ciphertext: String, fallback: String, channelId: String) -> String,
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBackClick)
 
-    val participantName = conversation?.participantName?.ifBlank { "Priya Sharma" } ?: "Priya Sharma"
-    val avatarKey = conversation?.participantAvatarKey?.ifBlank { "priya" } ?: "priya"
-    val isOnline = conversation?.presenceState != "offline"
+    val context = LocalContext.current
+    val tokens = LocalSecretGuardTokens.current
 
-    var messageText by remember { mutableStateOf("") }
-    var showAttachmentSheet by remember { mutableStateOf(false) }
-    var inspectedMessage by remember { mutableStateOf<ChatMessage?>(null) }
-    var playingMessageId by remember { mutableStateOf<String?>(null) }
-
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            onSendMessage(
-                "Encrypted Photo (${uri.lastPathSegment ?: "media"})",
-                "video",
-                15L,
-                "00:00:15"
-            )
+    val partnerUid = remember(conversation, currentUserId) {
+        conversation?.memberUids?.firstOrNull { it != currentUserId }
+            ?: conversation?.partnerUid.orEmpty()
+    }
+    val partnerName = remember(conversation, currentUserId) {
+        if (conversation == null) {
+            "Secret Chat"
+        } else if (conversation.ownerUid == currentUserId) {
+            conversation.participantName.ifBlank { "Trusted Contact" }
+        } else {
+            conversation.ownerName.ifBlank { conversation.participantName }
         }
     }
 
-    LaunchedEffect(playingMessageId) {
-        if (playingMessageId != null) {
-            delay(4000L)
-            playingMessageId = null
+    val directoryUsers = (directoryUsersState as? UiState.Success)?.data.orEmpty()
+    val livePartner = remember(directoryUsers, partnerUid) {
+        directoryUsers.firstOrNull { it.uid == partnerUid }
+    }
+    val avatarKey = livePartner?.photoUrl?.ifBlank {
+        conversation?.participantAvatarKey ?: "custom"
+    } ?: (conversation?.participantAvatarKey?.ifBlank { "custom" } ?: "custom")
+    val isOnline = livePartner?.onlineStatus == "online" || conversation?.presenceState == "online"
+    val partnerDemo = livePartner?.demographicSummary().orEmpty()
+
+    var messageText by remember { mutableStateOf("") }
+    var showAttachmentSheet by remember { mutableStateOf(false) }
+    var showVoiceNoteDialog by remember { mutableStateOf(false) }
+    var inspectedMessage by remember { mutableStateOf<ChatMessage?>(null) }
+
+    val hdPhotoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            onSendImageAttachment(uri)
+        }
+    }
+
+    val hdVideoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            onSendVideoAttachment(uri)
+        }
+    }
+
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            onSendDocumentAttachment(uri)
+        }
+    }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showVoiceNoteDialog = true
         }
     }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(WarmIvoryBackground)
+            .background(tokens.bg)
             .windowInsetsPadding(WindowInsets.statusBars)
             .windowInsetsPadding(WindowInsets.navigationBars)
             .imePadding()
             .widthIn(max = 600.dp)
     ) {
-        // 1. Top Conversation Bar
+        // 1. Top Conversation Bar (56dp height)
         Surface(
-            color = WarmIvoryBackground,
+            color = tokens.bg,
             shadowElevation = 1.dp,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(tokens.topBarHeight)
         ) {
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .fillMaxSize()
+                    .padding(horizontal = tokens.sp8),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = onBackClick,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("chat_back_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = DeepGreenBlackText
-                    )
-                }
+                SecretGuardIconButton(
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    testTag = "chat_back_button",
+                    onClick = onBackClick
+                )
 
                 ContactAvatarView(
                     avatarKey = avatarKey,
-                    displayName = participantName,
-                    size = 44.dp
+                    displayName = partnerName,
+                    size = 40.dp
                 )
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(tokens.sp8))
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = participantName,
-                        style = MaterialTheme.typography.titleMedium,
+                        text = partnerName,
+                        fontSize = tokens.headingSize,
+                        lineHeight = tokens.headingLineHeight,
                         fontWeight = FontWeight.Bold,
-                        color = DeepGreenBlackText
+                        color = tokens.text,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     OnlinePresenceRow(
                         isOnline = isOnline,
-                        label = if (isOnline) "Online" else "Offline"
+                        label = buildString {
+                            append(if (isOnline) "Online" else "Offline")
+                            if (partnerDemo.isNotBlank()) append(" • $partnerDemo")
+                        }
                     )
                 }
 
-                IconButton(
-                    onClick = { onStartAudioCall(participantName, avatarKey) },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("chat_audio_call_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Call,
-                        contentDescription = "Audio Call",
-                        tint = EmeraldPrimary
-                    )
-                }
+                SecretGuardIconButton(
+                    icon = Icons.Filled.Call,
+                    contentDescription = "Audio Call",
+                    tint = tokens.primary,
+                    testTag = "chat_audio_call_button",
+                    onClick = { onStartAudioCall(partnerName, avatarKey, partnerUid) }
+                )
 
-                IconButton(
-                    onClick = { onStartVideoCall(participantName, avatarKey) },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("chat_video_call_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Videocam,
-                        contentDescription = "Video Call",
-                        tint = EmeraldPrimary
-                    )
-                }
+                SecretGuardIconButton(
+                    icon = Icons.Filled.Videocam,
+                    contentDescription = "Full HD Video Call",
+                    tint = tokens.primary,
+                    testTag = "chat_video_call_button",
+                    onClick = { onStartVideoCall(partnerName, avatarKey, partnerUid) }
+                )
             }
         }
 
-        // 2. Message List
+        // 2. Real-Time Message List
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -234,94 +279,125 @@ fun ConversationScreen(
             when (messagesState) {
                 is UiState.Loading -> {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = EmeraldPrimary)
+                        CircularProgressIndicator(color = tokens.primary)
                     }
                 }
 
                 is UiState.Error -> {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = messagesState.message,
-                            color = Color(0xFFB42318),
-                            modifier = Modifier.padding(20.dp)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(tokens.sp16),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        SecretGuardEmptyState(
+                            icon = Icons.Filled.Lock,
+                            title = "Message Sync Error",
+                            subtitle = messagesState.message
                         )
                     }
                 }
 
                 is UiState.Success -> {
                     val messages = messagesState.data
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(messages, key = { it.id }) { msg ->
-                            ChatMessageBubbleItem(
-                                message = msg,
-                                isPlaying = playingMessageId == msg.id,
-                                onTogglePlay = {
-                                    playingMessageId = if (playingMessageId == msg.id) null else msg.id
-                                },
-                                onInspectCiphertext = { inspectedMessage = msg }
+                    if (messages.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(tokens.sp16),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            SecretGuardEmptyState(
+                                icon = Icons.Filled.Lock,
+                                title = "Private Chat",
+                                subtitle = "Send a message, photo, video, or voice note to $partnerName."
                             )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(horizontal = tokens.sp16, vertical = tokens.sp12),
+                            verticalArrangement = Arrangement.spacedBy(tokens.sp12)
+                        ) {
+                            items(messages, key = { it.id }) { msg ->
+                                val isMine = msg.senderUid == currentUserId || (msg.senderUid.isBlank() && msg.isOutgoing)
+                                val decryptedText = remember(msg.id, msg.encryptedCiphertext, msg.text) {
+                                    onDecryptMessage(
+                                        msg.encryptedCiphertext,
+                                        msg.text,
+                                        msg.conversationId.ifBlank { "global" }
+                                    )
+                                }
+                                ChatMessageBubbleItem(
+                                    message = msg,
+                                    decryptedText = decryptedText,
+                                    isOutgoing = isMine,
+                                    isPlaying = playingMediaId == msg.id,
+                                    onTogglePlay = { onTogglePlayAudioMessage(msg) },
+                                    onInspectOrDelete = { inspectedMessage = msg },
+                                    onDeletePermanently = { onDeleteMessagePermanently(msg) }
+                                )
+                            }
                         }
                     }
                 }
             }
         }
 
-        // 3. Bottom Pill Composer Bar
+        // 3. Bottom Pill Composer Bar (keeps input visible when keyboard opens via imePadding)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = tokens.sp16, vertical = tokens.sp8)
         ) {
             Surface(
                 shape = CircleShape,
-                color = PureWhiteSurface,
-                shadowElevation = 4.dp,
+                color = tokens.surface2,
+                shadowElevation = 2.dp,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, EmeraldPillBorder.copy(alpha = 0.7f), CircleShape)
+                    .border(1.dp, tokens.border, CircleShape)
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                        .padding(horizontal = tokens.sp8, vertical = tokens.sp4),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
                         onClick = { showAttachmentSheet = true },
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(48.dp)
                             .testTag("chat_attach_button")
                     ) {
                         Icon(
                             imageVector = Icons.Filled.AttachFile,
-                            contentDescription = "Attach Media",
-                            tint = SecondarySlateGreenText
+                            contentDescription = "Attach HD Photo, Video or File",
+                            tint = tokens.textMuted
                         )
                     }
 
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .padding(horizontal = 6.dp),
+                            .padding(horizontal = tokens.sp4),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         if (messageText.isEmpty()) {
                             Text(
                                 text = "Type a message...",
-                                color = MutedCaptionText,
-                                fontSize = 15.sp
+                                color = tokens.textMuted,
+                                fontSize = 16.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         BasicTextField(
                             value = messageText,
                             onValueChange = { messageText = it },
                             textStyle = TextStyle(
-                                color = DeepGreenBlackText,
-                                fontSize = 15.sp
+                                color = tokens.text,
+                                fontSize = 16.sp
                             ),
                             singleLine = false,
                             maxLines = 3,
@@ -332,23 +408,46 @@ fun ConversationScreen(
                     }
 
                     IconButton(
+                        onClick = {
+                            val hasMic = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (hasMic) {
+                                showVoiceNoteDialog = true
+                            } else {
+                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("chat_voice_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Mic,
+                            contentDescription = "Record Voice Message",
+                            tint = tokens.primary
+                        )
+                    }
+
+                    IconButton(
                         onClick = { messageText += " \uD83D\uDE0A" },
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(48.dp)
                             .testTag("chat_emoji_button")
                     ) {
                         Icon(
                             imageVector = Icons.Filled.SentimentSatisfiedAlt,
                             contentDescription = "Add Emoji",
-                            tint = SecondarySlateGreenText
+                            tint = tokens.textMuted
                         )
                     }
 
                     Surface(
                         shape = CircleShape,
-                        color = EmeraldPrimary,
+                        color = tokens.primary,
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(48.dp)
                             .clip(CircleShape)
                             .clickable {
                                 val trimmed = messageText.trim()
@@ -362,8 +461,8 @@ fun ConversationScreen(
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Send Encrypted Message",
-                                tint = PureWhiteSurface,
+                                contentDescription = "Send Message",
+                                tint = tokens.onPrimary,
                                 modifier = Modifier.size(20.dp)
                             )
                         }
@@ -373,143 +472,255 @@ fun ConversationScreen(
         }
     }
 
-    // Attachment Picker Dialog (Zero-permission Photo Picker + Voice Note + Video Clip)
+    // Real Attachment Picker Dialog (HD Photo, HD Video, Files/Documents, Voice Note)
     if (showAttachmentSheet) {
         AlertDialog(
             onDismissRequest = { showAttachmentSheet = false },
-            containerColor = PureWhiteSurface,
+            shape = RoundedCornerShape(tokens.radiusCard),
+            containerColor = tokens.bg,
             title = {
                 Text(
-                    text = "Send Encrypted Attachment",
+                    text = "Share Media & Files",
+                    fontSize = tokens.headingSize,
                     fontWeight = FontWeight.Bold,
-                    color = DeepGreenBlackText
+                    color = tokens.text
                 )
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(tokens.sp8)) {
                     Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = EmeraldMintCard,
+                        shape = RoundedCornerShape(tokens.radiusCard),
+                        color = tokens.surface2,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(tokens.radiusCard))
                             .clickable {
                                 showAttachmentSheet = false
-                                photoPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                hdPhotoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                                 )
                             }
                     ) {
                         Row(
-                            modifier = Modifier.padding(14.dp),
+                            modifier = Modifier.padding(tokens.sp12),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Filled.PhotoLibrary, contentDescription = null, tint = EmeraldPrimary)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text("Choose Photo / Video (Android Photo Picker)", fontWeight = FontWeight.SemiBold)
+                            Icon(Icons.Filled.PhotoLibrary, contentDescription = null, tint = tokens.primary)
+                            Spacer(modifier = Modifier.width(tokens.sp12))
+                            Text("Send HD Photo", fontWeight = FontWeight.Bold, color = tokens.text)
                         }
                     }
 
                     Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = EmeraldMintCard,
+                        shape = RoundedCornerShape(tokens.radiusCard),
+                        color = tokens.surface2,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(tokens.radiusCard))
                             .clickable {
                                 showAttachmentSheet = false
-                                onSendMessage(
-                                    "Encrypted Voice Note",
-                                    "audio",
-                                    12L,
-                                    "00:00:12"
+                                hdVideoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                                 )
                             }
                     ) {
                         Row(
-                            modifier = Modifier.padding(14.dp),
+                            modifier = Modifier.padding(tokens.sp12),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Filled.Mic, contentDescription = null, tint = EmeraldPrimary)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text("Send Encrypted Audio Note (00:00:12)", fontWeight = FontWeight.SemiBold)
+                            Icon(Icons.Filled.Movie, contentDescription = null, tint = tokens.primary)
+                            Spacer(modifier = Modifier.width(tokens.sp12))
+                            Text("Send HD Video", fontWeight = FontWeight.Bold, color = tokens.text)
                         }
                     }
 
                     Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = EmeraldMintCard,
+                        shape = RoundedCornerShape(tokens.radiusCard),
+                        color = tokens.surface2,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(tokens.radiusCard))
                             .clickable {
                                 showAttachmentSheet = false
-                                onSendMessage(
-                                    "Encrypted Mountain Lake Clip",
-                                    "video",
-                                    15L,
-                                    "00:00:15"
-                                )
+                                documentPickerLauncher.launch(arrayOf("*/*"))
                             }
                     ) {
                         Row(
-                            modifier = Modifier.padding(14.dp),
+                            modifier = Modifier.padding(tokens.sp12),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Filled.Videocam, contentDescription = null, tint = EmeraldPrimary)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text("Send Encrypted Video Clip (00:00:15)", fontWeight = FontWeight.SemiBold)
+                            Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = tokens.primary)
+                            Spacer(modifier = Modifier.width(tokens.sp12))
+                            Text("Send File / Document", fontWeight = FontWeight.Bold, color = tokens.text)
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(tokens.radiusCard),
+                        color = tokens.surface2,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(tokens.radiusCard))
+                            .clickable {
+                                showAttachmentSheet = false
+                                val hasMic = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (hasMic) {
+                                    showVoiceNoteDialog = true
+                                } else {
+                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(tokens.sp12),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Filled.Mic, contentDescription = null, tint = tokens.primary)
+                            Spacer(modifier = Modifier.width(tokens.sp12))
+                            Text("Record Voice Note", fontWeight = FontWeight.Bold, color = tokens.text)
                         }
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { showAttachmentSheet = false }) {
-                    Text("Close", color = SecondarySlateGreenText)
+                    Text("Close", color = tokens.textMuted)
                 }
             }
         )
     }
 
-    // AES-256-GCM Envelope Inspector Modal when user taps a message
-    if (inspectedMessage != null) {
-        val msg = inspectedMessage!!
+    // Real Hardware Voice Note Recorder Modal for Chat
+    if (showVoiceNoteDialog) {
+        var isRecording by remember { mutableStateOf(false) }
+        var elapsedSec by remember { mutableLongStateOf(0L) }
+
+        LaunchedEffect(Unit) {
+            onStartHardwareVoiceRecording()
+            isRecording = true
+        }
+
+        LaunchedEffect(isRecording) {
+            while (isRecording) {
+                delay(1000L)
+                elapsedSec += 1L
+            }
+        }
+
         AlertDialog(
-            onDismissRequest = { inspectedMessage = null },
-            containerColor = PureWhiteSurface,
+            onDismissRequest = {
+                isRecording = false
+                onCancelHardwareVoiceRecording()
+                showVoiceNoteDialog = false
+            },
+            shape = RoundedCornerShape(tokens.radiusCard),
+            containerColor = tokens.bg,
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Lock, contentDescription = null, tint = EmeraldPrimary)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Message Encryption Envelope", fontWeight = FontWeight.Bold)
+                    Icon(Icons.Filled.GraphicEq, contentDescription = null, tint = tokens.danger)
+                    Spacer(modifier = Modifier.width(tokens.sp8))
+                    Text("Voice Note", fontWeight = FontWeight.Bold, color = tokens.text)
                 }
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(tokens.sp12)) {
                     Text(
-                        text = "Sender: ${msg.senderName}\nDelivery State: ${msg.deliveryState.uppercase()}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = SecondarySlateGreenText
+                        text = "● REC ${String.format("%02d:%02d", elapsedSec / 60, elapsedSec % 60)}",
+                        fontSize = tokens.bodySize,
+                        color = tokens.danger,
+                        fontWeight = FontWeight.Bold
                     )
-                    Surface(
-                        color = EmeraldLightTint,
-                        shape = RoundedCornerShape(12.dp)
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(38.dp)
                     ) {
-                        Text(
-                            text = msg.encryptedCiphertext.ifBlank { "AES256GCM:VERIFIED" },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFF065F46),
-                            modifier = Modifier.padding(12.dp)
-                        )
+                        val barCount = 22
+                        val spacing = size.width / barCount
+                        val amp = liveMicAmplitude.coerceIn(0.15f, 1.0f)
+                        for (i in 0 until barCount) {
+                            val phase = (((i * 5 + elapsedSec.toInt() * 3) % 7) + 1) / 7f
+                            val barH = (size.height * (0.20f + 0.78f * amp * phase)).coerceIn(6f, size.height)
+                            drawRoundRect(
+                                color = tokens.primary,
+                                topLeft = Offset(i * spacing + 3f, (size.height - barH) / 2f),
+                                size = Size(spacing * 0.55f, barH),
+                                cornerRadius = CornerRadius(5f, 5f)
+                            )
+                        }
                     }
                 }
             },
             confirmButton = {
                 Button(
-                    onClick = { inspectedMessage = null },
-                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                    onClick = {
+                        isRecording = false
+                        showVoiceNoteDialog = false
+                        onStopAndSendVoiceMessage(elapsedSec.coerceAtLeast(1L))
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = tokens.primary),
+                    shape = RoundedCornerShape(tokens.radiusPill)
                 ) {
-                    Text("Done")
+                    Icon(Icons.Filled.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(tokens.sp8))
+                    Text("Send (${elapsedSec.coerceAtLeast(1L)}s)")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        isRecording = false
+                        onCancelHardwareVoiceRecording()
+                        showVoiceNoteDialog = false
+                    }
+                ) {
+                    Text("Cancel", color = tokens.textMuted)
+                }
+            }
+        )
+    }
+
+    // Permanent Delete Confirmation Modal when user taps a message
+    if (inspectedMessage != null) {
+        val msg = inspectedMessage!!
+        AlertDialog(
+            onDismissRequest = { inspectedMessage = null },
+            shape = RoundedCornerShape(tokens.radiusCard),
+            containerColor = tokens.bg,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.DeleteOutline, contentDescription = null, tint = tokens.danger)
+                    Spacer(modifier = Modifier.width(tokens.sp8))
+                    Text("Delete Message", fontWeight = FontWeight.Bold, color = tokens.text)
+                }
+            },
+            text = {
+                Text(
+                    text = "Permanently delete this message for everyone in the chat?",
+                    fontSize = tokens.bodySize,
+                    color = tokens.text
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        inspectedMessage = null
+                        onDeleteMessagePermanently(msg)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = tokens.danger),
+                    shape = RoundedCornerShape(tokens.radiusPill)
+                ) {
+                    Icon(Icons.Filled.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(tokens.sp8))
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { inspectedMessage = null }) {
+                    Text("Cancel", color = tokens.textMuted)
                 }
             }
         )
@@ -519,11 +730,14 @@ fun ConversationScreen(
 @Composable
 private fun ChatMessageBubbleItem(
     message: ChatMessage,
+    decryptedText: String,
+    isOutgoing: Boolean,
     isPlaying: Boolean,
     onTogglePlay: () -> Unit,
-    onInspectCiphertext: () -> Unit
+    onInspectOrDelete: () -> Unit,
+    onDeletePermanently: () -> Unit
 ) {
-    val isOutgoing = message.isOutgoing
+    val tokens = LocalSecretGuardTokens.current
     val timeText = remember(message.createdAt, message.mediaLabel) {
         if (message.mediaLabel.endsWith("AM") || message.mediaLabel.endsWith("PM")) {
             message.mediaLabel
@@ -532,188 +746,181 @@ private fun ChatMessageBubbleItem(
             if (date != null) {
                 SimpleDateFormat("hh:mm a", Locale.US).format(date)
             } else {
-                "10:15 AM"
+                "Just now"
             }
         }
     }
 
+    val isRead = message.deliveryState == "read"
+    val bubbleColor = if (isOutgoing) tokens.surface2 else tokens.bg
+    val maxBubbleWidth = if (tokens.isCompact) 252.dp else 284.dp
+
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isOutgoing) Arrangement.End else Arrangement.Start
+        horizontalArrangement = if (isOutgoing) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        when (message.messageType) {
-            "video" -> {
-                // Scenic Mountain-Lake Video Attachment Card matching Screen 4 reference
-                Surface(
-                    shape = RoundedCornerShape(22.dp),
-                    color = PureWhiteSurface,
-                    shadowElevation = 2.dp,
-                    modifier = Modifier
-                        .width(268.dp)
-                        .clip(RoundedCornerShape(22.dp))
-                        .clickable { onTogglePlay() }
-                ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(148.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                        ) {
-                            // Illustrated Alpine Mountain & Turquoise Lake Canvas
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                val w = size.width
-                                val h = size.height
-                                // Sky gradient
-                                drawRect(
-                                    brush = Brush.verticalGradient(
-                                        colors = listOf(Color(0xFF74B9FF), Color(0xFFDFF9FB))
-                                    ),
-                                    size = Size(w, h * 0.65f)
-                                )
-                                // Snow-capped mountains
-                                val peaks = Path().apply {
-                                    moveTo(0f, h * 0.62f)
-                                    lineTo(w * 0.22f, h * 0.24f)
-                                    lineTo(w * 0.42f, h * 0.50f)
-                                    lineTo(w * 0.68f, h * 0.18f)
-                                    lineTo(w, h * 0.56f)
-                                    lineTo(w, h * 0.65f)
-                                    lineTo(0f, h * 0.65f)
-                                    close()
-                                }
-                                drawPath(
-                                    path = peaks,
-                                    brush = Brush.verticalGradient(
-                                        colors = listOf(Color(0xFF576574), Color(0xFF222F3E))
-                                    )
-                                )
-                                // Alpine lake reflection
-                                drawRect(
-                                    brush = Brush.verticalGradient(
-                                        colors = listOf(Color(0xFF0ABDE3), Color(0xFF10AC84))
-                                    ),
-                                    topLeft = Offset(0f, h * 0.62f),
-                                    size = Size(w, h * 0.38f)
-                                )
-                            }
+        if (isOutgoing) {
+            IconButton(
+                onClick = onDeletePermanently,
+                modifier = Modifier
+                    .size(44.dp)
+                    .testTag("delete_message_${message.id}")
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.DeleteOutline,
+                    contentDescription = "Delete Message Permanently",
+                    tint = tokens.textMuted.copy(alpha = 0.75f),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
 
-                            // Center Play/Pause Circle Button
+        when (message.messageType) {
+            "image", "video" -> {
+                val isVideo = message.messageType == "video"
+                Surface(
+                    shape = RoundedCornerShape(tokens.radiusCard),
+                    color = bubbleColor,
+                    modifier = Modifier
+                        .widthIn(max = maxBubbleWidth)
+                        .border(1.dp, tokens.border, RoundedCornerShape(tokens.radiusCard))
+                        .clip(RoundedCornerShape(tokens.radiusCard))
+                        .clickable { onInspectOrDelete() }
+                ) {
+                    Column(modifier = Modifier.padding(tokens.sp8)) {
+                        if (message.mediaBase64.isNotBlank()) {
                             Box(
                                 modifier = Modifier
-                                    .size(54.dp)
-                                    .align(Alignment.Center)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(alpha = 0.45f))
-                                    .border(2.dp, PureWhiteSurface, CircleShape),
+                                    .fillMaxWidth()
+                                    .height(if (tokens.isCompact) 148.dp else 176.dp)
+                                    .clip(RoundedCornerShape(tokens.radiusSmall)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                    contentDescription = "Play Video",
-                                    tint = PureWhiteSurface,
-                                    modifier = Modifier.size(30.dp)
+                                Base64BitmapImage(
+                                    base64Data = message.mediaBase64,
+                                    contentDescription = decryptedText,
+                                    modifier = Modifier.fillMaxSize()
                                 )
-                            }
-
-                            // Bottom-right duration pill ("00:00:15")
-                            Surface(
-                                shape = CircleShape,
-                                color = Color.Black.copy(alpha = 0.62f),
-                                modifier = Modifier
-                                    .align(Alignment.BottomEnd)
-                                    .padding(8.dp)
-                            ) {
-                                Text(
-                                    text = if (isPlaying) "Playing..." else "00:00:${String.format("%02d", message.mediaDurationSec.coerceAtLeast(15L))}",
-                                    color = PureWhiteSurface,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
+                                if (isVideo) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.Black.copy(alpha = 0.6f),
+                                        modifier = Modifier.size(48.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Filled.PlayArrow,
+                                                contentDescription = "HD Video",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(28.dp)
+                                            )
+                                        }
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(tokens.radiusSmall),
+                                        color = Color.Black.copy(alpha = 0.65f),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(tokens.sp8)
+                                    ) {
+                                        Text(
+                                            text = "00:${String.format("%02d", message.mediaDurationSec.coerceAtLeast(1L))}",
+                                            color = Color.White,
+                                            fontSize = tokens.captionSize,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = tokens.sp8, vertical = tokens.sp4)
+                                        )
+                                    }
+                                }
                             }
                         }
-
-                        Spacer(modifier = Modifier.height(6.dp))
-
+                        Spacer(modifier = Modifier.height(tokens.sp4))
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 6.dp),
-                            horizontalArrangement = Arrangement.End,
+                                .padding(horizontal = tokens.sp4),
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "10:14 AM",
-                                fontSize = 11.sp,
-                                color = MutedCaptionText
+                                text = decryptedText,
+                                fontSize = tokens.captionSize,
+                                color = tokens.text,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(
-                                imageVector = Icons.Filled.DoneAll,
-                                contentDescription = "Read",
-                                tint = EmeraldPrimary,
-                                modifier = Modifier.size(15.dp)
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = timeText,
+                                    fontSize = tokens.captionSize,
+                                    color = tokens.textMuted
+                                )
+                                if (isOutgoing) {
+                                    Spacer(modifier = Modifier.width(tokens.sp4))
+                                    Icon(
+                                        imageVector = if (isRead) Icons.Filled.DoneAll else Icons.Filled.Done,
+                                        contentDescription = message.deliveryState,
+                                        tint = if (isRead) tokens.primary else tokens.textMuted,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
 
             "audio", "recording" -> {
-                // Mint Audio Waveform Bubble ("00:00:12") matching Screen 4 reference
+                // Real Playable Audio Waveform Bubble with Permanent Delete support
                 Surface(
-                    shape = RoundedCornerShape(
-                        topStart = 20.dp,
-                        topEnd = 20.dp,
-                        bottomStart = if (isOutgoing) 20.dp else 6.dp,
-                        bottomEnd = if (isOutgoing) 6.dp else 20.dp
-                    ),
-                    color = EmeraldOutgoingBubble,
-                    shadowElevation = 1.dp,
+                    shape = RoundedCornerShape(tokens.radiusCard),
+                    color = bubbleColor,
                     modifier = Modifier
-                        .width(264.dp)
-                        .clip(RoundedCornerShape(20.dp))
+                        .widthIn(max = maxBubbleWidth)
+                        .border(1.dp, tokens.border, RoundedCornerShape(tokens.radiusCard))
+                        .clip(RoundedCornerShape(tokens.radiusCard))
                         .clickable { onTogglePlay() }
                 ) {
                     Column(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                        modifier = Modifier.padding(tokens.sp12)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(tokens.sp8)
                         ) {
                             Box(
                                 modifier = Modifier
                                     .size(36.dp)
                                     .clip(CircleShape)
-                                    .background(EmeraldPrimary),
+                                    .background(tokens.primary),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                                     contentDescription = "Play Audio Note",
-                                    tint = PureWhiteSurface,
+                                    tint = tokens.onPrimary,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
 
-                            // Waveform visualization bars
                             val barHeights = listOf(
                                 0.35f, 0.55f, 0.85f, 0.45f, 0.95f, 0.60f, 0.40f,
                                 0.80f, 1.0f, 0.65f, 0.50f, 0.90f, 0.45f, 0.75f,
-                                0.55f, 0.35f, 0.70f, 0.40f
+                                0.55f, 0.35f
                             )
                             Canvas(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(26.dp)
+                                    .height(24.dp)
                             ) {
                                 val step = size.width / barHeights.size
                                 barHeights.forEachIndexed { idx, ratio ->
                                     val h = size.height * ratio
                                     drawRoundRect(
-                                        color = if (isPlaying && idx % 2 == 0) Color(0xFF044932) else EmeraldPrimary,
+                                        color = if (isPlaying && idx % 2 == 0) tokens.text else tokens.primary,
                                         topLeft = Offset(idx * step + 2f, (size.height - h) / 2f),
                                         size = Size((step * 0.52f).coerceAtLeast(3f), h),
                                         cornerRadius = CornerRadius(4f, 4f)
@@ -722,81 +929,128 @@ private fun ChatMessageBubbleItem(
                             }
 
                             Text(
-                                text = "00:00:${String.format("%02d", message.mediaDurationSec.coerceAtLeast(12L))}",
-                                fontSize = 12.sp,
-                                color = DeepGreenBlackText,
-                                fontWeight = FontWeight.Medium
+                                text = "00:${String.format("%02d", message.mediaDurationSec.coerceAtLeast(1L))}",
+                                fontSize = tokens.captionSize,
+                                color = tokens.text,
+                                fontWeight = FontWeight.Bold
                             )
                         }
 
+                        Spacer(modifier = Modifier.height(tokens.sp4))
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = timeText,
-                                fontSize = 10.sp,
-                                color = SecondarySlateGreenText
+                                text = if (isPlaying) "Playing..." else "Voice note",
+                                fontSize = tokens.captionSize,
+                                color = tokens.textMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(
-                                imageVector = Icons.Filled.DoneAll,
-                                contentDescription = "Read",
-                                tint = EmeraldPrimary,
-                                modifier = Modifier.size(14.dp)
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = timeText,
+                                    fontSize = tokens.captionSize,
+                                    color = tokens.textMuted
+                                )
+                                if (isOutgoing) {
+                                    Spacer(modifier = Modifier.width(tokens.sp4))
+                                    Icon(
+                                        imageVector = if (isRead) Icons.Filled.DoneAll else Icons.Filled.Done,
+                                        contentDescription = message.deliveryState,
+                                        tint = if (isRead) tokens.primary else tokens.textMuted,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
 
             else -> {
-                // Standard Text Message Bubble
+                // Text or Document Message Bubble
                 Surface(
                     shape = RoundedCornerShape(
-                        topStart = 20.dp,
-                        topEnd = 20.dp,
-                        bottomStart = if (isOutgoing) 20.dp else 4.dp,
-                        bottomEnd = if (isOutgoing) 4.dp else 20.dp
+                        topStart = tokens.radiusCard,
+                        topEnd = tokens.radiusCard,
+                        bottomStart = if (isOutgoing) tokens.radiusCard else tokens.radiusSmall,
+                        bottomEnd = if (isOutgoing) tokens.radiusSmall else tokens.radiusCard
                     ),
-                    color = if (isOutgoing) EmeraldOutgoingBubble else PureWhiteSurface,
-                    shadowElevation = 1.dp,
+                    color = bubbleColor,
                     modifier = Modifier
-                        .widthIn(min = 110.dp, max = 280.dp)
-                        .clickable { onInspectCiphertext() }
+                        .widthIn(max = maxBubbleWidth)
+                        .border(
+                            1.dp,
+                            tokens.border,
+                            RoundedCornerShape(
+                                topStart = tokens.radiusCard,
+                                topEnd = tokens.radiusCard,
+                                bottomStart = if (isOutgoing) tokens.radiusCard else tokens.radiusSmall,
+                                bottomEnd = if (isOutgoing) tokens.radiusSmall else tokens.radiusCard
+                            )
+                        )
+                        .clip(
+                            RoundedCornerShape(
+                                topStart = tokens.radiusCard,
+                                topEnd = tokens.radiusCard,
+                                bottomStart = if (isOutgoing) tokens.radiusCard else tokens.radiusSmall,
+                                bottomEnd = if (isOutgoing) tokens.radiusSmall else tokens.radiusCard
+                            )
+                        )
+                        .clickable { onInspectOrDelete() }
                 ) {
                     Column(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                        modifier = Modifier.padding(horizontal = tokens.sp12, vertical = tokens.sp8)
                     ) {
                         Text(
-                            text = message.text,
-                            color = DeepGreenBlackText,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Medium
+                            text = decryptedText,
+                            fontSize = tokens.bodySize,
+                            lineHeight = tokens.bodyLineHeight,
+                            color = tokens.text
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(tokens.sp4))
                         Row(
-                            modifier = Modifier.align(Alignment.End),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.End,
+                            modifier = Modifier.align(Alignment.End)
                         ) {
                             Text(
                                 text = timeText,
-                                fontSize = 10.sp,
-                                color = SecondarySlateGreenText
+                                fontSize = tokens.captionSize,
+                                color = tokens.textMuted
                             )
                             if (isOutgoing) {
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Spacer(modifier = Modifier.width(tokens.sp4))
                                 Icon(
-                                    imageVector = Icons.Filled.DoneAll,
-                                    contentDescription = "Read",
-                                    tint = EmeraldPrimary,
+                                    imageVector = if (isRead) Icons.Filled.DoneAll else Icons.Filled.Done,
+                                    contentDescription = message.deliveryState,
+                                    tint = if (isRead) tokens.primary else tokens.textMuted,
                                     modifier = Modifier.size(14.dp)
                                 )
                             }
                         }
                     }
                 }
+            }
+        }
+
+        if (!isOutgoing) {
+            IconButton(
+                onClick = onDeletePermanently,
+                modifier = Modifier
+                    .size(44.dp)
+                    .testTag("delete_message_${message.id}")
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.DeleteOutline,
+                    contentDescription = "Delete Message Permanently",
+                    tint = tokens.textMuted.copy(alpha = 0.65f),
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
     }

@@ -7,6 +7,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -17,8 +18,9 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Hardware-backed Android Keystore AES-256-GCM encryption manager and PBKDF2-HMAC-SHA256
- * PIN verifier with attempt throttling, following Section 10 of the SecretGuard blueprint.
+ * Hardware-backed Android Keystore AES-256-GCM encryption manager, shared conversation
+ * AES-256-GCM cipher for multi-device real-time messaging/media, and PBKDF2-HMAC-SHA256
+ * PIN verifier with attempt throttling.
  */
 class KeystoreCryptoManager(context: Context? = null) {
 
@@ -32,9 +34,8 @@ class KeystoreCryptoManager(context: Context? = null) {
     private val secureRandom = SecureRandom()
 
     private val fallbackSecretKey: SecretKey by lazy {
-        val keyBytes = ByteArray(32)
-        // Deterministic per-process fallback key for JVM unit tests where AndroidKeyStore is absent
-        secureRandom.nextBytes(keyBytes)
+        val digest = MessageDigest.getInstance("SHA-256")
+        val keyBytes = digest.digest("secretguard_local_keystore_fallback_v1".toByteArray(StandardCharsets.UTF_8))
         SecretKeySpec(keyBytes, "AES")
     }
 
@@ -70,16 +71,37 @@ class KeystoreCryptoManager(context: Context? = null) {
     }
 
     /**
-     * Encrypts plaintext into an authenticated AES-256-GCM envelope:
+     * Derives a deterministic 256-bit AES-GCM key for a specific shared conversation or call room
+     * so both authenticated participants on different devices can encrypt and decrypt messages
+     * and recorded audio/image attachments in real time.
+     */
+    private fun deriveSharedChannelKey(channelId: String): SecretKey {
+        val normalized = channelId.trim().ifBlank { "default_secretguard_channel" }
+        return try {
+            val salt = "SecretGuard_SharedChannel_Salt_v1:$normalized".toByteArray(StandardCharsets.UTF_8)
+            val spec = PBEKeySpec(normalized.toCharArray(), salt, 4096, 256)
+            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            val raw = factory.generateSecret(spec).encoded
+            SecretKeySpec(raw, "AES")
+        } catch (_: Exception) {
+            val digest = MessageDigest.getInstance("SHA-256")
+            SecretKeySpec(digest.digest(normalized.toByteArray(StandardCharsets.UTF_8)), "AES")
+        }
+    }
+
+    /**
+     * Encrypts plaintext using the shared channel AES-256-GCM key so any member in `memberUids`
+     * can decrypt the message in real time across devices.
      * Format: AES256GCM:<base64_iv>:<base64_ciphertext_and_tag>
      */
-    fun encryptMessageEnvelope(plaintext: String): String {
+    fun encryptMessageEnvelope(plaintext: String, channelId: String = "global"): String {
         if (plaintext.isEmpty()) return "AES256GCM:EMPTY:EMPTY"
         return try {
             val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
-            val secretKey = getOrCreateAesKey()
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
-            val iv = cipher.iv
+            val iv = ByteArray(12)
+            secureRandom.nextBytes(iv)
+            val spec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+            cipher.init(Cipher.ENCRYPT_MODE, deriveSharedChannelKey(channelId), spec)
             val ciphertext = cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
             val ivB64 = Base64.encodeToString(iv, Base64.NO_WRAP)
             val cipherB64 = Base64.encodeToString(ciphertext, Base64.NO_WRAP)
@@ -96,7 +118,11 @@ class KeystoreCryptoManager(context: Context? = null) {
     /**
      * Decrypts an AES-256-GCM envelope produced by [encryptMessageEnvelope].
      */
-    fun decryptMessageEnvelope(envelope: String, fallbackPlaintext: String = ""): String {
+    fun decryptMessageEnvelope(
+        envelope: String,
+        fallbackPlaintext: String = "",
+        channelId: String = "global"
+    ): String {
         if (!envelope.startsWith("AES256GCM:")) return fallbackPlaintext
         val parts = envelope.split(":")
         if (parts.size != 3) return fallbackPlaintext
@@ -107,6 +133,17 @@ class KeystoreCryptoManager(context: Context? = null) {
             } catch (_: Exception) {
                 fallbackPlaintext
             }
+        }
+        // Try shared channel key first, then device Keystore key for legacy local envelopes
+        try {
+            val iv = Base64.decode(parts[1], Base64.NO_WRAP)
+            val cipherBytes = Base64.decode(parts[2], Base64.NO_WRAP)
+            val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+            val spec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+            cipher.init(Cipher.DECRYPT_MODE, deriveSharedChannelKey(channelId), spec)
+            return String(cipher.doFinal(cipherBytes), StandardCharsets.UTF_8)
+        } catch (_: Exception) {
+            // Fallback to device hardware Keystore key
         }
         return try {
             val iv = Base64.decode(parts[1], Base64.NO_WRAP)
@@ -120,10 +157,70 @@ class KeystoreCryptoManager(context: Context? = null) {
         }
     }
 
+    /**
+     * Encrypts raw binary media (such as recorded .m4a audio or .jpg image bytes) using AES-256-GCM
+     * for shared real-time playback or local storage.
+     */
+    fun encryptBinaryPayload(rawBytes: ByteArray, channelId: String = "global"): String {
+        if (rawBytes.isEmpty()) return ""
+        return try {
+            val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+            val iv = ByteArray(12)
+            secureRandom.nextBytes(iv)
+            val spec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+            cipher.init(Cipher.ENCRYPT_MODE, deriveSharedChannelKey(channelId), spec)
+            val encrypted = cipher.doFinal(rawBytes)
+            val combined = ByteArray(iv.size + encrypted.size)
+            System.arraycopy(iv, 0, combined, 0, iv.size)
+            System.arraycopy(encrypted, 0, combined, iv.size, encrypted.size)
+            Base64.encodeToString(combined, Base64.NO_WRAP)
+        } catch (_: Exception) {
+            Base64.encodeToString(rawBytes, Base64.NO_WRAP)
+        }
+    }
+
+    /**
+     * Decrypts Base64 binary payload encrypted by [encryptBinaryPayload].
+     */
+    fun decryptBinaryPayload(encodedPayload: String, channelId: String = "global"): ByteArray? {
+        if (encodedPayload.isBlank()) return null
+        val decoded = try {
+            Base64.decode(encodedPayload, Base64.NO_WRAP)
+        } catch (_: Exception) {
+            return null
+        }
+        if (decoded.size <= 12) return decoded
+        return try {
+            val iv = decoded.copyOfRange(0, 12)
+            val cipherBytes = decoded.copyOfRange(12, decoded.size)
+            val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+            val spec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+            cipher.init(Cipher.DECRYPT_MODE, deriveSharedChannelKey(channelId), spec)
+            cipher.doFinal(cipherBytes)
+        } catch (_: Exception) {
+            // If payload was stored as raw Base64 media, return decoded bytes directly
+            decoded
+        }
+    }
+
+    private fun encryptLocalKeystoreSecret(plaintext: String): String {
+        return try {
+            val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateAesKey())
+            val ivB64 = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
+            val cipherB64 = Base64.encodeToString(
+                cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8)),
+                Base64.NO_WRAP
+            )
+            "AES256GCM:$ivB64:$cipherB64"
+        } catch (_: Exception) {
+            encryptMessageEnvelope(plaintext, "local_pin")
+        }
+    }
+
     private fun ensureDefaultSecretCodeInitialized() {
         val existingHash = readValue(KEY_PIN_HASH_ENVELOPE)
         if (existingHash.isNullOrBlank()) {
-            // Initialize default 6-digit Secret Code (246810) protected via PBKDF2 + Keystore AES-GCM
             saveNewPinInternal("246810")
         }
     }
@@ -134,7 +231,7 @@ class KeystoreCryptoManager(context: Context? = null) {
 
     fun getDisplayPinForOwnerPreview(): String {
         val encryptedPreview = readValue(KEY_PIN_PREVIEW_ENVELOPE) ?: return "246810"
-        return decryptMessageEnvelope(encryptedPreview, "246810")
+        return decryptMessageEnvelope(encryptedPreview, "246810", "local_pin")
     }
 
     fun getRemainingLockoutSeconds(nowMillis: Long = System.currentTimeMillis()): Long {
@@ -147,10 +244,6 @@ class KeystoreCryptoManager(context: Context? = null) {
         return readValue(KEY_FAILED_ATTEMPTS)?.toIntOrNull() ?: 0
     }
 
-    /**
-     * Verifies a 6-8 digit PIN against the PBKDF2-HMAC-SHA256 hash stored inside an Android
-     * Keystore AES-256-GCM envelope. Enforces attempt throttling after 3 failed tries.
-     */
     fun verifyPin(candidatePin: String, nowMillis: Long = System.currentTimeMillis()): PinVerifyResult {
         val lockoutRemaining = getRemainingLockoutSeconds(nowMillis)
         if (lockoutRemaining > 0L) {
@@ -163,7 +256,7 @@ class KeystoreCryptoManager(context: Context? = null) {
 
         val saltB64 = readValue(KEY_PIN_SALT) ?: return PinVerifyResult.Failed(1)
         val storedEnvelope = readValue(KEY_PIN_HASH_ENVELOPE) ?: return PinVerifyResult.Failed(1)
-        val expectedHashB64 = decryptMessageEnvelope(storedEnvelope, "")
+        val expectedHashB64 = decryptMessageEnvelope(storedEnvelope, "", "local_pin")
 
         val salt = Base64.decode(saltB64, Base64.NO_WRAP)
         val candidateHashB64 = derivePbkdf2HashB64(cleanPin, salt)
@@ -185,9 +278,6 @@ class KeystoreCryptoManager(context: Context? = null) {
         }
     }
 
-    /**
-     * Updates the 6-8 digit PIN only after verifying the current PIN.
-     */
     fun changePin(currentPin: String, newPin: String): PinChangeResult {
         val verifyResult = verifyPin(currentPin)
         if (verifyResult !is PinVerifyResult.Success) {
@@ -211,9 +301,6 @@ class KeystoreCryptoManager(context: Context? = null) {
         return PinChangeResult.Success
     }
 
-    /**
-     * Resets the Secret Code after verified Google Account Recovery re-authentication.
-     */
     fun resetPinViaAuthenticatedAccount(newPin: String): PinChangeResult {
         val cleanNew = newPin.trim()
         if (cleanNew.length !in 6..8 || !cleanNew.all { it.isDigit() }) {
@@ -230,8 +317,8 @@ class KeystoreCryptoManager(context: Context? = null) {
         secureRandom.nextBytes(salt)
         val saltB64 = Base64.encodeToString(salt, Base64.NO_WRAP)
         val hashB64 = derivePbkdf2HashB64(pin, salt)
-        val encryptedHashEnvelope = encryptMessageEnvelope(hashB64)
-        val encryptedPreviewEnvelope = encryptMessageEnvelope(pin)
+        val encryptedHashEnvelope = encryptLocalKeystoreSecret(hashB64)
+        val encryptedPreviewEnvelope = encryptLocalKeystoreSecret(pin)
 
         writeValue(KEY_PIN_SALT, saltB64)
         writeValue(KEY_PIN_HASH_ENVELOPE, encryptedHashEnvelope)

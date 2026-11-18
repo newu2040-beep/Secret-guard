@@ -1,0 +1,179 @@
+name: Build and Publish Debug APK Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-apk:
+    name: Build and Publish Debug APK to GitHub Releases
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Verify Java environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          echo "JAVA_HOME=${JAVA_HOME:-}"
+          JAVA_MAJOR=$(java -version 2>&1 | awk -F '[\"_.]' '/version/ {if ($2 == "1") print $3; else print $2; exit}')
+          if [ -z "$JAVA_MAJOR" ]; then
+            echo "::error::Could not detect active Java major version"
+            exit 1
+          fi
+          if [ "$JAVA_MAJOR" -lt 17 ]; then
+            echo "::error::Java 17 or newer is required (detected Java $JAVA_MAJOR)"
+            exit 1
+          fi
+          echo "Detected Java major version: $JAVA_MAJOR"
+
+      - name: Decode debug.keystore from debug.keystore.base64
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "debug.keystore.base64" ]; then
+            tr -d '[:space:]' < debug.keystore.base64 | base64 -d > debug.keystore
+            echo "Decoded debug.keystore ($(stat -c '%s' debug.keystore) bytes)"
+          else
+            echo "::error::Missing debug.keystore.base64 in repository root"
+            exit 1
+          fi
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Build Debug APK with Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Sign and Verify Debug APK (v1 + v2 + v3 schemes)
+        id: validate_apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_FILE="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK_FILE" ] || [ ! -s "$APK_FILE" ]; then
+            echo "::error::Built APK not found or empty at $APK_FILE"
+            exit 1
+          fi
+
+          APKSIGNER_BIN=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner | sort -V | tail -n 1 || true)
+          if [ -n "$APKSIGNER_BIN" ]; then
+            "$APKSIGNER_BIN" sign \
+              --ks debug.keystore \
+              --ks-pass pass:android \
+              --key-pass pass:android \
+              --ks-key-alias androiddebugkey \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              --v3-signing-enabled true \
+              "$APK_FILE"
+            "$APKSIGNER_BIN" verify --verbose "$APK_FILE"
+          fi
+
+          echo "Verifying APK ZIP archive integrity..."
+          unzip -tq "$APK_FILE"
+
+          ACTUAL_SHA=$(sha256sum "$APK_FILE" | awk '{print $1}')
+          APK_BYTES=$(stat -c "%s" "$APK_FILE")
+          APK_HUMAN=$(awk "BEGIN {printf \"%.2f MB (%d bytes)\", $APK_BYTES / (1024*1024), $APK_BYTES}")
+          RELEASE_TAG="v5.0-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+
+          echo "apk_sha256=${ACTUAL_SHA}" >> "$GITHUB_OUTPUT"
+          echo "apk_size=${APK_HUMAN}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Validation succeeded: $APK_FILE ($APK_HUMAN), SHA-256: $ACTUAL_SHA"
+
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SecretGuard-v5.0-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release with direct APK download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.validate_apk.outputs.release_tag }}
+          APK_SHA256: ${{ steps.validate_apk.outputs.apk_sha256 }}
+          APK_SIZE: ${{ steps.validate_apk.outputs.apk_size }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_FILE="app/build/outputs/apk/debug/app-debug.apk"
+          DIRECT_LATEST_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/app-debug.apk"
+
+          NOTES_FILE="$(mktemp)"
+          cat <<EOF > "$NOTES_FILE"
+          ## SecretGuard v5.0 Debug APK Release
+
+          - **Application:** SecretGuard v5.0 (\`com.aistudio.secretguard.rxqmpv\`)
+          - **Asset Name:** \`app-debug.apk\`
+          - **APK Size:** ${APK_SIZE}
+          - **SHA-256 Checksum:** \`${APK_SHA256}\`
+          - **Signature Schemes:** v1 (JAR) + v2 + v3 Verified
+          - **Commit SHA:** \`${GITHUB_SHA}\`
+          - **Permanent Direct Download URL (Latest Release):**
+            ${DIRECT_LATEST_URL}
+          EOF
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${APK_FILE}#app-debug.apk" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --title "SecretGuard v5.0 Debug APK (#${GITHUB_RUN_NUMBER})" \
+              --notes-file "$NOTES_FILE" \
+              --latest
+          else
+            gh release create "$RELEASE_TAG" \
+              "${APK_FILE}#app-debug.apk" \
+              --title "SecretGuard v5.0 Debug APK (#${GITHUB_RUN_NUMBER})" \
+              --notes-file "$NOTES_FILE" \
+              --target "$GITHUB_SHA" \
+              --latest
+          fi
+
+          rm -f "$NOTES_FILE"
+
+      - name: Write Release Summary
+        env:
+          RELEASE_TAG: ${{ steps.validate_apk.outputs.release_tag }}
+          APK_SHA256: ${{ steps.validate_apk.outputs.apk_sha256 }}
+          APK_SIZE: ${{ steps.validate_apk.outputs.apk_size }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIRECT_LATEST_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/app-debug.apk"
+          RELEASE_PAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+
+          {
+            echo "## SecretGuard v5.0 Debug APK Published to GitHub Releases"
+            echo ""
+            echo "| Property | Value |"
+            echo "| :--- | :--- |"
+            echo "| **Release Tag** | \`${RELEASE_TAG}\` |"
+            echo "| **APK Asset** | \`app-debug.apk\` |"
+            echo "| **APK Size** | ${APK_SIZE} |"
+            echo "| **SHA-256 Checksum** | \`${APK_SHA256}\` |"
+            echo "| **GitHub Release Page** | [View Release](${RELEASE_PAGE_URL}) |"
+            echo "| **Direct APK Download URL** | [${DIRECT_LATEST_URL}](${DIRECT_LATEST_URL}) |"
+          } >> "$GITHUB_STEP_SUMMARY"

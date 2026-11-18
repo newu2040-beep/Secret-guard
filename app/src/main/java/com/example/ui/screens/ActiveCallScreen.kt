@@ -18,26 +18,33 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
@@ -46,7 +53,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -67,40 +74,46 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.data.model.TrustedContact
+import com.example.data.model.UserProfile
+import com.example.ui.components.Base64BitmapImage
 import com.example.ui.components.ContactAvatarView
+import com.example.ui.components.LiveCameraPreview
 import com.example.ui.theme.CallBackdropBottom
 import com.example.ui.theme.CallBackdropMid
 import com.example.ui.theme.CallBackdropTop
-import com.example.ui.theme.DeepGreenBlackText
-import com.example.ui.theme.EmeraldLightTint
-import com.example.ui.theme.EmeraldPrimary
 import com.example.ui.theme.EndCallRed
+import com.example.ui.theme.LocalSecretGuardTokens
 import com.example.ui.theme.OnlineGreenStatus
 import com.example.ui.theme.PureWhiteSurface
 import com.example.ui.theme.RecordingRedStatus
-import com.example.ui.theme.SecondarySlateGreenText
+import com.example.ui.theme.WarningAmberStatus
 import com.example.ui.viewmodel.ActiveCallUiState
+import com.example.ui.viewmodel.UiState
 
 /**
- * Screen 3 — Active Call matching the reference specification:
- * - Atmospheric mountain/forest gradient surface with optional local PiP preview.
- * - Glowing circular portrait avatar, participant identity ("Priya Sharma"), live timer ("00:12:34") + green dot.
- * - Visible red recording pill and timer; recording starts ONLY after every required participant has consented,
- *   and stops immediately if consent is withdrawn.
- * - Controls: Mute, Speaker, Camera, More (Consent Recording & Camera Switch), and Red End Call button.
- * - Bottom pill: Lock icon + "Encrypted Call".
+ * Screen 3 — Active Call with real-time 2-Way Voice Streaming (`AudioRecord` + `AudioTrack`),
+ * Full HD 1080p CameraX hardware video preview & low-latency frame sync, Group Call participant
+ * invite/join (up to 8 members), and Call Recording.
  */
 @Composable
 fun ActiveCallScreen(
+    currentUserId: String,
     callState: ActiveCallUiState,
+    contactsState: UiState<List<TrustedContact>>,
+    directoryUsersState: UiState<List<UserProfile>>,
     onBackClick: () -> Unit,
     onToggleMute: () -> Unit,
     onToggleSpeaker: () -> Unit,
     onToggleCamera: () -> Unit,
     onSwitchCamera: () -> Unit,
+    onToggleHdResolution: () -> Unit,
+    onInviteParticipant: (uid: String, name: String) -> Unit,
+    onPublishVideoFrame: (String) -> Unit,
     onOpenConsentDialog: () -> Unit,
     onDismissConsentDialog: () -> Unit,
     onConfirmAllParticipantsConsent: () -> Unit,
@@ -111,7 +124,16 @@ fun ActiveCallScreen(
     BackHandler(onBack = onBackClick)
 
     val context = LocalContext.current
-    var showLocalPipPreview by remember { mutableStateOf(false) }
+    val tokens = LocalSecretGuardTokens.current
+    var showLocalPipPreview by remember { mutableStateOf(true) }
+    var showInviteParticipantDialog by remember { mutableStateOf(false) }
+
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
     var permissionNotice by remember { mutableStateOf<String?>(null) }
 
     val permissionsLauncher = rememberLauncherForActivityResult(
@@ -119,8 +141,9 @@ fun ActiveCallScreen(
     ) { result ->
         val micGranted = result[Manifest.permission.RECORD_AUDIO] ?: false
         val camGranted = result[Manifest.permission.CAMERA] ?: false
+        hasCameraPermission = camGranted
         permissionNotice = if (!micGranted && !camGranted) {
-            "Camera & Microphone permissions were declined. Running in encrypted audio-safe mode."
+            "Camera & Microphone permissions were declined."
         } else {
             null
         }
@@ -135,6 +158,7 @@ fun ActiveCallScreen(
             context,
             Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
+        hasCameraPermission = hasCam
 
         if (!hasMic || !hasCam) {
             permissionsLauncher.launch(
@@ -156,53 +180,63 @@ fun ActiveCallScreen(
                 )
             )
     ) {
-        // Atmospheric blurred mountain-lake silhouette matching Screen 3 reference
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
+        // Render remote participant's Full HD 1080p video feed full-bleed with high filter quality
+        if (callState.remoteVideoFrame.isNotBlank()) {
+            Base64BitmapImage(
+                base64Data = callState.remoteVideoFrame,
+                contentDescription = "Remote Full HD Video Stream",
+                modifier = Modifier.fillMaxSize()
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.24f))
+            )
+        } else {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
 
-            // Soft horizon glow
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color(0xFFFAD9A1).copy(alpha = 0.25f),
-                        Color.Transparent
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            Color(0xFFFAD9A1).copy(alpha = 0.25f),
+                            Color.Transparent
+                        ),
+                        center = Offset(w * 0.5f, h * 0.52f),
+                        radius = w * 0.65f
                     ),
-                    center = Offset(w * 0.5f, h * 0.52f),
-                    radius = w * 0.65f
-                ),
-                radius = w * 0.65f,
-                center = Offset(w * 0.5f, h * 0.52f)
-            )
+                    radius = w * 0.65f,
+                    center = Offset(w * 0.5f, h * 0.52f)
+                )
 
-            // Distant mountain ridge
-            val backMountain = Path().apply {
-                moveTo(0f, h * 0.62f)
-                lineTo(w * 0.28f, h * 0.48f)
-                lineTo(w * 0.55f, h * 0.57f)
-                lineTo(w * 0.82f, h * 0.45f)
-                lineTo(w, h * 0.55f)
-                lineTo(w, h)
-                lineTo(0f, h)
-                close()
-            }
-            drawPath(
-                path = backMountain,
-                color = Color(0xFF1F3F34).copy(alpha = 0.65f)
-            )
+                val backMountain = Path().apply {
+                    moveTo(0f, h * 0.62f)
+                    lineTo(w * 0.28f, h * 0.48f)
+                    lineTo(w * 0.55f, h * 0.57f)
+                    lineTo(w * 0.82f, h * 0.45f)
+                    lineTo(w, h * 0.55f)
+                    lineTo(w, h)
+                    lineTo(0f, h)
+                    close()
+                }
+                drawPath(
+                    path = backMountain,
+                    color = Color(0xFF1F3F34).copy(alpha = 0.65f)
+                )
 
-            // Foreground pine slope
-            val frontSlope = Path().apply {
-                moveTo(0f, h * 0.72f)
-                quadraticTo(w * 0.45f, h * 0.64f, w, h * 0.76f)
-                lineTo(w, h)
-                lineTo(0f, h)
-                close()
+                val frontSlope = Path().apply {
+                    moveTo(0f, h * 0.72f)
+                    quadraticTo(w * 0.45f, h * 0.64f, w, h * 0.76f)
+                    lineTo(w, h)
+                    lineTo(0f, h)
+                    close()
+                }
+                drawPath(
+                    path = frontSlope,
+                    color = Color(0xFF13261C).copy(alpha = 0.82f)
+                )
             }
-            drawPath(
-                path = frontSlope,
-                color = Color(0xFF13261C).copy(alpha = 0.82f)
-            )
         }
 
         Column(
@@ -211,14 +245,14 @@ fun ActiveCallScreen(
                 .windowInsetsPadding(WindowInsets.safeDrawing)
                 .widthIn(max = 600.dp)
                 .align(Alignment.Center)
-                .padding(horizontal = 22.dp, vertical = 16.dp),
+                .padding(horizontal = tokens.sp16, vertical = tokens.sp12),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Top Header: Back arrow, Consent Recording Pill, and PiP Expand Button
+            // Top Header: Back arrow, Recording Pill, Add Participant (Group Call), and PiP Toggle
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(tokens.sp8),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -236,25 +270,23 @@ fun ActiveCallScreen(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
                             tint = PureWhiteSurface,
-                            modifier = Modifier.size(26.dp)
+                            modifier = Modifier.size(24.dp)
                         )
                     }
 
-                    // Persistent Consent-First Recording Pill (PDF Section 9)
                     if (callState.isRecording && callState.consentState == "all_consented") {
                         Surface(
                             shape = CircleShape,
                             color = RecordingRedStatus,
-                            shadowElevation = 4.dp,
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .clickable { onWithdrawConsentAndStop() }
                                 .testTag("active_recording_pill")
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                modifier = Modifier.padding(horizontal = tokens.sp12, vertical = tokens.sp8),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(tokens.sp4)
                             ) {
                                 Icon(
                                     imageVector = Icons.Filled.FiberManualRecord,
@@ -265,7 +297,35 @@ fun ActiveCallScreen(
                                 Text(
                                     text = "REC ${formatCallDuration(callState.recordingElapsedSeconds)} • Stop",
                                     color = PureWhiteSurface,
-                                    style = MaterialTheme.typography.labelMedium,
+                                    fontSize = tokens.captionSize,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    } else if (callState.consentState == "requested") {
+                        Surface(
+                            shape = CircleShape,
+                            color = WarningAmberStatus,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .clickable { onOpenConsentDialog() }
+                                .testTag("request_recording_consent_pill")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = tokens.sp12, vertical = tokens.sp8),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(tokens.sp4)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.FiberManualRecord,
+                                    contentDescription = null,
+                                    tint = PureWhiteSurface,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Text(
+                                    text = "Approve Record",
+                                    color = PureWhiteSurface,
+                                    fontSize = tokens.captionSize,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -273,16 +333,16 @@ fun ActiveCallScreen(
                     } else {
                         Surface(
                             shape = CircleShape,
-                            color = Color.White.copy(alpha = 0.16f),
+                            color = Color.White.copy(alpha = 0.18f),
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .clickable { onOpenConsentDialog() }
                                 .testTag("request_recording_consent_pill")
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                modifier = Modifier.padding(horizontal = tokens.sp12, vertical = tokens.sp8),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(tokens.sp4)
                             ) {
                                 Icon(
                                     imageVector = Icons.Filled.FiberManualRecord,
@@ -291,30 +351,112 @@ fun ActiveCallScreen(
                                     modifier = Modifier.size(12.dp)
                                 )
                                 Text(
-                                    text = "Consent Record",
+                                    text = "Record",
                                     color = PureWhiteSurface,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontSize = tokens.captionSize,
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                         }
                     }
 
+                    Row(horizontalArrangement = Arrangement.spacedBy(tokens.sp8)) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.18f),
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .clickable { showInviteParticipantDialog = true }
+                                .testTag("call_add_participant_button")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.PersonAdd,
+                                    contentDescription = "Add Participant to Group Call",
+                                    tint = PureWhiteSurface,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.18f),
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .clickable { showLocalPipPreview = !showLocalPipPreview }
+                                .testTag("call_pip_button")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.OpenInFull,
+                                    contentDescription = "Toggle Local Preview",
+                                    tint = PureWhiteSurface,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Live 2-Way Voice + Full HD 1080p Resolution & Group Member Pill
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(tokens.sp8),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Surface(
                         shape = CircleShape,
-                        color = Color.White.copy(alpha = 0.18f),
+                        color = Color.Black.copy(alpha = 0.38f),
                         modifier = Modifier
-                            .size(44.dp)
                             .clip(CircleShape)
-                            .clickable { showLocalPipPreview = !showLocalPipPreview }
-                            .testTag("call_pip_button")
+                            .clickable { onToggleHdResolution() }
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = tokens.sp12, vertical = tokens.sp4),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(tokens.sp4)
+                        ) {
                             Icon(
-                                imageVector = Icons.Filled.OpenInFull,
-                                contentDescription = "Toggle Local Preview",
-                                tint = PureWhiteSurface,
-                                modifier = Modifier.size(20.dp)
+                                imageVector = Icons.Filled.HighQuality,
+                                contentDescription = null,
+                                tint = OnlineGreenStatus,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = if (callState.isFullHd1080p) "Full HD 1080p" else "HD 720p",
+                                color = PureWhiteSurface,
+                                fontSize = tokens.captionSize,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.38f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = tokens.sp12, vertical = tokens.sp4),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(tokens.sp4)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.GraphicEq,
+                                contentDescription = null,
+                                tint = if (callState.isMuted) WarningAmberStatus else OnlineGreenStatus,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = if (callState.isMuted) {
+                                    "Muted"
+                                } else {
+                                    "Live Voice (${callState.memberUids.size.coerceAtLeast(1)})"
+                                },
+                                color = PureWhiteSurface,
+                                fontSize = tokens.captionSize,
+                                fontWeight = FontWeight.Medium
                             )
                         }
                     }
@@ -323,83 +465,123 @@ fun ActiveCallScreen(
                 if (permissionNotice != null) {
                     Surface(
                         color = Color.Black.copy(alpha = 0.45f),
-                        shape = RoundedCornerShape(12.dp)
+                        shape = RoundedCornerShape(tokens.radiusSmall)
                     ) {
                         Text(
                             text = permissionNotice!!,
                             color = PureWhiteSurface,
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            fontSize = tokens.captionSize,
+                            modifier = Modifier.padding(horizontal = tokens.sp12, vertical = tokens.sp4)
                         )
                     }
                 }
             }
 
-            // Center Dominant Participant Avatar + Name + Live Call Duration
+            // Center Dominant Participant Avatar + Name + Real-Time Call Status & Duration
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                val avatarSize = when {
+                    tokens.isCompact && callState.isCameraOn && showLocalPipPreview -> 96.dp
+                    callState.isCameraOn && showLocalPipPreview && hasCameraPermission -> 120.dp
+                    tokens.isCompact -> 128.dp
+                    else -> 152.dp
+                }
+
                 ContactAvatarView(
-                    avatarKey = callState.participantAvatarKey,
-                    displayName = callState.participantName,
-                    size = 168.dp,
+                    avatarKey = if (callState.memberUids.size > 2) "group" else callState.participantAvatarKey,
+                    displayName = callState.participantName.ifBlank { "Participant" },
+                    size = avatarSize,
                     showGlowRing = true
                 )
 
-                Spacer(modifier = Modifier.height(22.dp))
+                Spacer(modifier = Modifier.height(tokens.sp12))
 
                 Text(
-                    text = callState.participantName,
+                    text = callState.participantName.ifBlank { "Secret Call" },
                     color = PureWhiteSurface,
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.Bold
+                    fontSize = tokens.titleSize,
+                    lineHeight = tokens.titleLineHeight,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(tokens.sp4))
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(tokens.sp8)
                 ) {
                     Text(
-                        text = formatCallDuration(callState.elapsedSeconds),
-                        color = PureWhiteSurface.copy(alpha = 0.90f),
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium
+                        text = if (callState.status == "connected") {
+                            formatCallDuration(callState.elapsedSeconds)
+                        } else {
+                            callState.connectionState
+                        },
+                        color = PureWhiteSurface.copy(alpha = 0.92f),
+                        fontSize = tokens.bodySize,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Box(
                         modifier = Modifier
-                            .size(9.dp)
+                            .size(tokens.sp8)
                             .clip(CircleShape)
-                            .background(OnlineGreenStatus)
+                            .background(
+                                if (callState.status == "connected") OnlineGreenStatus else WarningAmberStatus
+                            )
                     )
                 }
 
-                if (showLocalPipPreview && callState.isCameraOn) {
-                    Spacer(modifier = Modifier.height(14.dp))
+                // Real Hardware CameraX Full HD 1080p Local PiP Preview Card
+                if (showLocalPipPreview && callState.isCameraOn && hasCameraPermission) {
+                    Spacer(modifier = Modifier.height(tokens.sp12))
+                    val pipWidth = if (tokens.isCompact) 112.dp else 132.dp
+                    val pipHeight = if (tokens.isCompact) 144.dp else 168.dp
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = Color.Black.copy(alpha = 0.55f),
+                        shape = RoundedCornerShape(tokens.radiusCard),
+                        color = Color.Black.copy(alpha = 0.65f),
                         modifier = Modifier
-                            .border(1.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                            .size(width = pipWidth, height = pipHeight)
+                            .border(1.5.dp, Color.White.copy(alpha = 0.45f), RoundedCornerShape(tokens.radiusCard))
+                            .clip(RoundedCornerShape(tokens.radiusCard))
                             .clickable { onSwitchCamera() }
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Cameraswitch,
-                                contentDescription = "Switch Camera",
-                                tint = PureWhiteSurface,
-                                modifier = Modifier.size(18.dp)
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LiveCameraPreview(
+                                isFrontCamera = callState.isFrontCamera,
+                                isFullHd1080p = callState.isFullHd1080p,
+                                onFrameCaptured = onPublishVideoFrame,
+                                modifier = Modifier.fillMaxSize()
                             )
-                            Text(
-                                text = if (callState.isFrontCamera) "Local PiP: Front Camera" else "Local PiP: Rear Camera",
-                                color = PureWhiteSurface,
-                                style = MaterialTheme.typography.labelMedium
-                            )
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.55f),
+                                shape = RoundedCornerShape(tokens.radiusSmall),
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(tokens.sp4)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = tokens.sp8, vertical = tokens.sp4),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(tokens.sp4)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Cameraswitch,
+                                        contentDescription = "Switch Camera",
+                                        tint = PureWhiteSurface,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = if (callState.isFrontCamera) "1080p Front" else "1080p Rear",
+                                        color = PureWhiteSurface,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -408,10 +590,9 @@ fun ActiveCallScreen(
             // Bottom Call Controls + Red End Call Button + Encrypted Call Pill
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(22.dp),
+                verticalArrangement = Arrangement.spacedBy(tokens.sp16),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                // 4 Circular Translucent Controls: Mute, Speaker, Camera, More
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly,
@@ -451,9 +632,8 @@ fun ActiveCallScreen(
                 Surface(
                     shape = CircleShape,
                     color = EndCallRed,
-                    shadowElevation = 8.dp,
                     modifier = Modifier
-                        .size(70.dp)
+                        .size(if (tokens.isCompact) 60.dp else 68.dp)
                         .clip(CircleShape)
                         .clickable(onClick = onEndCall)
                         .testTag("call_end_button")
@@ -463,7 +643,7 @@ fun ActiveCallScreen(
                             imageVector = Icons.Filled.CallEnd,
                             contentDescription = "End Call",
                             tint = PureWhiteSurface,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(28.dp)
                         )
                     }
                 }
@@ -474,12 +654,11 @@ fun ActiveCallScreen(
                     color = Color.White.copy(alpha = 0.16f),
                     modifier = Modifier
                         .border(1.dp, Color.White.copy(alpha = 0.22f), CircleShape)
-                        .padding(bottom = 4.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                        modifier = Modifier.padding(horizontal = tokens.sp16, vertical = tokens.sp8),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(tokens.sp8)
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Lock,
@@ -490,8 +669,10 @@ fun ActiveCallScreen(
                         Text(
                             text = "Encrypted Call",
                             color = PureWhiteSurface,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium
+                            fontSize = tokens.captionSize,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -499,38 +680,197 @@ fun ActiveCallScreen(
         }
     }
 
-    // Consent-First Call Recording Modal (PDF Section 9)
-    if (callState.showConsentDialog) {
+    // Add Participant to Group Call Modal (Up to 8 Members)
+    if (showInviteParticipantDialog) {
+        val contacts = (contactsState as? UiState.Success)?.data.orEmpty().filter { it.status != "blocked" }
+        val directoryUsers = (directoryUsersState as? UiState.Success)?.data.orEmpty()
+        var customParticipantName by remember { mutableStateOf("") }
+        var customParticipantUid by remember { mutableStateOf("") }
+
         AlertDialog(
-            onDismissRequest = onDismissConsentDialog,
-            containerColor = PureWhiteSurface,
+            onDismissRequest = { showInviteParticipantDialog = false },
+            shape = RoundedCornerShape(tokens.radiusCard),
+            containerColor = tokens.bg,
             title = {
                 Text(
-                    text = "Consent-First Call Recording",
+                    text = "Add to Group Call (${callState.memberUids.size}/8)",
+                    fontSize = tokens.headingSize,
                     fontWeight = FontWeight.Bold,
-                    color = DeepGreenBlackText
+                    color = tokens.text
                 )
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Every participant must explicitly consent before call recording begins:",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = DeepGreenBlackText
-                    )
-                    Surface(
-                        color = EmeraldLightTint,
-                        shape = RoundedCornerShape(12.dp)
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 320.dp),
+                    verticalArrangement = Arrangement.spacedBy(tokens.sp8)
+                ) {
+                    item {
+                        Text(
+                            text = "Select a contact or user to join this call:",
+                            fontSize = tokens.captionSize,
+                            color = tokens.textMuted
+                        )
+                    }
+
+                    items(contacts, key = { it.id }) { c ->
+                        val pUid = if (c.ownerUid == currentUserId) c.targetUid else c.ownerUid
+                        val pName = if (c.ownerUid == currentUserId) c.contactName else c.requesterName.ifBlank { c.contactName }
+                        val alreadyInCall = pUid in callState.memberUids
+                        Surface(
+                            shape = RoundedCornerShape(tokens.radiusCard),
+                            color = tokens.surface2,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(tokens.radiusCard))
+                                .clickable(enabled = !alreadyInCall) {
+                                    onInviteParticipant(pUid, pName)
+                                    showInviteParticipantDialog = false
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(tokens.sp12),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                ContactAvatarView(avatarKey = c.avatarKey, displayName = pName, size = 36.dp)
+                                Spacer(modifier = Modifier.width(tokens.sp12))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(pName, fontWeight = FontWeight.Bold, color = tokens.text)
+                                    Text(
+                                        text = if (alreadyInCall) "In call" else "Tap to invite",
+                                        fontSize = tokens.captionSize,
+                                        color = tokens.textMuted
+                                    )
+                                }
+                                if (!alreadyInCall) {
+                                    Icon(Icons.Filled.Add, contentDescription = null, tint = tokens.primary)
+                                }
+                            }
+                        }
+                    }
+
+                    items(directoryUsers, key = { it.uid }) { u ->
+                        val alreadyInCall = u.uid in callState.memberUids
+                        Surface(
+                            shape = RoundedCornerShape(tokens.radiusCard),
+                            color = tokens.surface2,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(tokens.radiusCard))
+                                .clickable(enabled = !alreadyInCall) {
+                                    onInviteParticipant(u.uid, u.displayName)
+                                    showInviteParticipantDialog = false
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(tokens.sp12),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                ContactAvatarView(avatarKey = u.photoUrl, displayName = u.displayName, size = 36.dp)
+                                Spacer(modifier = Modifier.width(tokens.sp12))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(u.displayName, fontWeight = FontWeight.Bold, color = tokens.text)
+                                    Text(
+                                        text = if (alreadyInCall) "In call" else "${u.userHandle} • Tap to invite",
+                                        fontSize = tokens.captionSize,
+                                        color = tokens.textMuted
+                                    )
+                                }
+                                if (!alreadyInCall) {
+                                    Icon(Icons.Filled.Add, contentDescription = null, tint = tokens.primary)
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = customParticipantName,
+                            onValueChange = { customParticipantName = it },
+                            label = { Text("Participant Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(tokens.sp8))
+                        OutlinedTextField(
+                            value = customParticipantUid,
+                            onValueChange = { customParticipantUid = it },
+                            label = { Text("Participant ID (optional)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (customParticipantName.isNotBlank()) {
+                            onInviteParticipant(customParticipantUid, customParticipantName)
+                        }
+                        showInviteParticipantDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = tokens.primary),
+                    shape = RoundedCornerShape(tokens.radiusPill)
+                ) {
+                    Text("Invite")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showInviteParticipantDialog = false }) {
+                    Text("Close", color = tokens.textMuted)
+                }
+            }
+        )
+    }
+
+    // Call Options & Recording Modal
+    if (callState.showConsentDialog) {
+        AlertDialog(
+            onDismissRequest = onDismissConsentDialog,
+            shape = RoundedCornerShape(tokens.radiusCard),
+            containerColor = tokens.bg,
+            title = {
+                Text(
+                    text = "Call Options & Recording",
+                    fontSize = tokens.headingSize,
+                    fontWeight = FontWeight.Bold,
+                    color = tokens.text
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(tokens.sp12)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "• Scope: Captures SecretGuard WebRTC audio/video session with ${callState.participantName}.\n" +
-                                "• Indicator: Displays a persistent red recording pill to all participants.\n" +
-                                "• Withdrawal: Recording stops immediately if any participant withdraws consent.\n" +
-                                "• Storage: Protected with AES-256-GCM and auto-cleaned per retention policy.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF065F46),
-                            modifier = Modifier.padding(12.dp)
+                            text = "Video Quality",
+                            fontSize = tokens.bodySize,
+                            fontWeight = FontWeight.Bold,
+                            color = tokens.text
+                        )
+                        TextButton(onClick = onToggleHdResolution) {
+                            Text(
+                                text = if (callState.isFullHd1080p) "Full HD 1080p ✓" else "HD 720p",
+                                color = tokens.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = tokens.surface2,
+                        shape = RoundedCornerShape(tokens.radiusSmall)
+                    ) {
+                        Text(
+                            text = "• Caller Approval: ${if (callState.callerConsent) "Ready" else "Pending"}\n" +
+                                "• Partner Approval: ${if (callState.calleeConsent) "Ready" else "Pending"}\n" +
+                                "• Participants: ${callState.memberUids.size.coerceAtLeast(1)}/8",
+                            fontSize = tokens.captionSize,
+                            lineHeight = tokens.captionLineHeight,
+                            color = tokens.text,
+                            modifier = Modifier.padding(tokens.sp12)
                         )
                     }
                 }
@@ -539,24 +879,26 @@ fun ActiveCallScreen(
                 if (callState.isRecording) {
                     Button(
                         onClick = onWithdrawConsentAndStop,
-                        colors = ButtonDefaults.buttonColors(containerColor = RecordingRedStatus)
+                        colors = ButtonDefaults.buttonColors(containerColor = tokens.danger),
+                        shape = RoundedCornerShape(tokens.radiusPill)
                     ) {
                         Icon(Icons.Filled.StopCircle, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Withdraw Consent & Stop")
+                        Spacer(modifier = Modifier.width(tokens.sp8))
+                        Text("Stop Recording")
                     }
                 } else {
                     Button(
                         onClick = onConfirmAllParticipantsConsent,
-                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                        colors = ButtonDefaults.buttonColors(containerColor = tokens.primary),
+                        shape = RoundedCornerShape(tokens.radiusPill)
                     ) {
-                        Text("All Participants Consent • Start")
+                        Text("Start Recording")
                     }
                 }
             },
             dismissButton = {
                 TextButton(onClick = onDismissConsentDialog) {
-                    Text("Close", color = SecondarySlateGreenText)
+                    Text("Close", color = tokens.textMuted)
                 }
             }
         )
@@ -571,15 +913,17 @@ private fun CallControlCircleButton(
     testTag: String,
     onClick: () -> Unit
 ) {
+    val tokens = LocalSecretGuardTokens.current
+    val btnSize = if (tokens.isCompact) 50.dp else 56.dp
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(tokens.sp4)
     ) {
         Surface(
             shape = CircleShape,
             color = if (isActive) Color.White.copy(alpha = 0.34f) else Color.White.copy(alpha = 0.18f),
             modifier = Modifier
-                .size(58.dp)
+                .size(btnSize)
                 .border(
                     width = 1.dp,
                     color = if (isActive) PureWhiteSurface else Color.White.copy(alpha = 0.25f),
@@ -594,22 +938,25 @@ private fun CallControlCircleButton(
                     imageVector = icon,
                     contentDescription = label,
                     tint = PureWhiteSurface,
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(tokens.iconSize)
                 )
             }
         }
         Text(
             text = label,
-            color = PureWhiteSurface.copy(alpha = 0.92f),
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Medium
+            color = PureWhiteSurface,
+            fontSize = tokens.captionSize,
+            lineHeight = tokens.captionLineHeight,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
 
-private fun formatCallDuration(seconds: Long): String {
-    val hrs = seconds / 3600
-    val mins = (seconds % 3600) / 60
-    val secs = seconds % 60
+private fun formatCallDuration(totalSeconds: Long): String {
+    val hrs = totalSeconds / 3600
+    val mins = (totalSeconds % 3600) / 60
+    val secs = totalSeconds % 60
     return String.format("%02d:%02d:%02d", hrs, mins, secs)
 }
